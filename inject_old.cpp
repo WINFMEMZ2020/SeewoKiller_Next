@@ -4,18 +4,13 @@
 #include <string>
 #include <tchar.h> 
 #include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
 #include <algorithm>
 #include <vector>
 #include <tlhelp32.h> 
 #include <atomic>
 #include <wincrypt.h>
-#include <commctrl.h>
-#pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "advapi32.lib")
-#pragma comment(lib, "comctl32.lib")
-
-// 新增：前向声明 Edit 子类过程（使用传统 SetWindowLongPtr / CallWindowProc 方式）
-LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 // 管道通信相关
 HANDLE g_hPipe = NULL;
@@ -282,17 +277,6 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
                                 hwnd, NULL, GetModuleHandle(NULL), NULL);
                             SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-                            // 注册 Edit 子类：按 Enter 会触发父窗口的 OK 按钮处理
-                            // 使用 SetWindowLongPtr + SetProp 保存原始 WndProc（避免对 comctl32 的链接依赖）
-                            WNDPROC origProc = (WNDPROC)SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)EditSubclassProc);
-                            SetPropW(hEdit, L"OrigEditProc", (HANDLE)origProc);
-
-                            // 将输入焦点设置到编辑控件
-                            // 为了兼容性那就几种方法都试一次吧w
-                            SetFocus(hEdit);
-                            SetActiveWindow(hwnd);
-                            SetForegroundWindow(hwnd);
-
                             // 按钮
                             HWND hButton = CreateWindow(L"BUTTON", L"OK",
                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -333,17 +317,11 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
                                     //MessageBoxW(hwnd, L"true", L"验证结果", MB_OK);
                                     ToggleMenuVisibility();
                                     SendPipeCommand(L"WindowsVerified");
-                                    DestroyWindow(hwnd);
                                 }else{
                                     MessageBoxW(hwnd, L"Wrong password.", L"", MB_OK | MB_ICONERROR);
                                     SetWindowText(hEdit, L""); // 清空输入框
-                                    // 重新设置焦点
-                                    SetFocus(hEdit);
-                                    SetActiveWindow(hwnd);
-                                    SetForegroundWindow(hwnd);
                                 }
-                                // 虽然不太清楚，反正加个retuen 0又不吃亏w
-                                return 0;
+                                DestroyWindow(hwnd);
                             }
                             break;
                         case WM_CLOSE:
@@ -583,39 +561,4 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved
         windowThread.detach();
     }
     return TRUE;
-}
-
-// 新增：Edit 子类过程，按 Enter 时向父窗口发送 OK 按钮点击消息（ID = 1）
-LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
-{
-    if (uMsg == WM_KEYDOWN && wParam == VK_RETURN)
-    {
-        HWND hParent = GetParent(hWnd);
-        if (hParent)
-        {
-            // 模拟按钮 ID=1 被点击：发送 WM_COMMAND (低字 = 控件ID, 高字 = BN_CLICKED)
-            SendMessage(hParent, WM_COMMAND, MAKEWPARAM(1, BN_CLICKED), (LPARAM)hWnd);
-        }
-        return 0; 
-    }
-
-    // 在控件销毁时恢复原始过程并移除属性
-    if (uMsg == WM_NCDESTROY)
-    {
-        WNDPROC orig = (WNDPROC)(ULONG_PTR)GetPropW(hWnd, L"OrigEditProc");
-        if (orig) {
-            SetWindowLongPtr(hWnd, GWLP_WNDPROC, (LONG_PTR)orig);
-            RemovePropW(hWnd, L"OrigEditProc");
-        }
-        // 继续向原始过程传递 WM_NCDESTROY（如果 orig 存在）
-        if (orig) return CallWindowProc(orig, hWnd, uMsg, wParam, lParam);
-        return 0;
-    }
-
-    // 其它消息转发到原始过程
-    WNDPROC orig = (WNDPROC)(ULONG_PTR)GetPropW(hWnd, L"OrigEditProc");
-    if (orig) {
-        return CallWindowProc(orig, hWnd, uMsg, wParam, lParam);
-    }
-    return DefWindowProc(hWnd, uMsg, wParam, lParam);
 }

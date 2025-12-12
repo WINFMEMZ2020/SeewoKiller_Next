@@ -610,67 +610,112 @@ void PipeWorker(HANDLE hPipe) {
                 }
                 CloseHandle(hSnap);
             }
-            // 2. 启动Seewo相关进程
-            std::vector<std::wstring> exeList = {
-                L"C:\\Program Files (x86)\\Seewo\\SeewoService\\SeewoService_1.5.5.3862\\SeewoServiceAssistant\\SeewoServiceAssistant.exe",
-                L"C:\\Program Files (x86)\\Seewo\\SeewoService\\SeewoService_1.5.5.3862\\SeewoAbility\\SeewoAbility.exe"
-                //L"C:\\Program Files (x86)\\Seewo\\SeewoService\\SeewoService_1.5.4.3822\\screenCapture.exe",
-                //L"C:\\Program Files (x86)\\Seewo\\SeewoService\\SeewoService_1.5.4.3822\\media_capture.exe",
-                //L"C:\\Program Files (x86)\\Seewo\\SeewoService\\SeewoService_1.5.4.3822\\rtcRemoteDesktop.exe"
-            };
-            for (size_t i = 0; i < exeList.size(); ++i) {
-                std::wstring exe = exeList[i];
-                std::wstring logMsg = L"[RestartSeewo] Starting: ";
-                logMsg += exe;
-                AppendLog(logMsg);
-                // 检查文件是否存在
-                DWORD attr = GetFileAttributesW(exe.c_str());
-                if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-                    AppendLog(L"[RestartSeewo] File not found: " + exe);
-                    continue;
-                }
-                // 构造带引号的命令行
-                std::wstring cmdLine = L"\"" + exe + L"\"";
-                STARTUPINFOW si = { sizeof(si) };
-                PROCESS_INFORMATION pi = {};
-                BOOL ok = CreateProcessW(exe.c_str(), (LPWSTR)cmdLine.c_str(), NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
-                if (ok) {
-                    AppendLog(L"[RestartSeewo] Started successfully.");
-                    CloseHandle(pi.hProcess);
-                    CloseHandle(pi.hThread);
-                } else {
-                    DWORD err = GetLastError();
-                    if (err == ERROR_ELEVATION_REQUIRED || err == 740) {
-                        AppendLog(L"[RestartSeewo] CreateProcessW elevation required, retrying with ShellExecuteW runas...");
-                        HINSTANCE hRes = ShellExecuteW(NULL, L"runas", exe.c_str(), NULL, NULL, SW_SHOWNORMAL);
-                        if ((INT_PTR)hRes > 32) {
-                            AppendLog(L"[RestartSeewo] ShellExecuteW(runas) started successfully.");
-                        } else {
-                            AppendLog(L"[RestartSeewo] ShellExecuteW(runas) failed: " + std::to_wstring((INT_PTR)hRes));
+            // 查找SeewoService的位置
+            // 第一步：查找"C:\\Program Files (x86)\\Seewo\\SeewoService\\"目录下匹配"SeewoService_"开头的文件夹
+            std::wstring seewoServiceRoot = L"C:\\Program Files (x86)\\Seewo\\SeewoService\\";
+            std::wstring bestFolder; // 保存匹配到的最好（最新）的文件夹名（仅文件夹名，不含尾分隔符）
+            const wchar_t* prefix = L"SeewoService_";
+            size_t prefixLen = wcslen(prefix);
+
+            WIN32_FIND_DATAW fd = {};
+            std::wstring findPattern = seewoServiceRoot + L"*";
+            HANDLE hFind = FindFirstFileW(findPattern.c_str(), &fd);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                do {
+                    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                        std::wstring name = fd.cFileName;
+                        if (name.length() >= prefixLen && _wcsnicmp(name.c_str(), prefix, prefixLen) == 0) {
+                            // 选取最大的目录名（简单按字典序），也可以按时间戳比较 fd.ftLastWriteTime
+                            if (bestFolder.empty() || _wcsicmp(name.c_str(), bestFolder.c_str()) > 0) {
+                                bestFolder = name;
+                            }
                         }
+                    }
+                } while (FindNextFileW(hFind, &fd));
+                FindClose(hFind);
+            }
+
+            std::wstring seewoServicePath; // 完整路径，含末尾反斜杠
+            bool path_found = false;
+            if (!bestFolder.empty()) {
+                seewoServicePath = seewoServiceRoot + bestFolder + L"\\";
+                path_found = true;
+                AppendLog(L"[RestartSeewo] Found SeewoService folder: " + seewoServicePath);
+            } else {
+                AppendLog(L"[RestartSeewo] No SeewoService_* folder found under: " + seewoServiceRoot);
+            }
+
+            // 第二步：拼接完整路径
+            std::wstring seewoServiceAssistantExe = seewoServicePath + L"SeewoServiceAssistant\\SeewoServiceAssistant.exe";
+            DWORD attr = GetFileAttributesW(seewoServiceAssistantExe.c_str());
+            std::wstring SeewoAbilityExe = seewoServicePath + L"SeewoAbility\\SeewoAbility.exe";
+            DWORD attr2 = GetFileAttributesW(SeewoAbilityExe.c_str());
+            
+            if(path_found){
+                // 2. 启动Seewo相关进程
+                std::vector<std::wstring> exeList = {
+                    seewoServiceAssistantExe,
+                    SeewoAbilityExe
+                    //L"C:\\Program Files (x86)\\Seewo\\SeewoService\\SeewoService_1.5.4.3822\\screenCapture.exe",
+                    //L"C:\\Program Files (x86)\\Seewo\\SeewoService\\SeewoService_1.5.4.3822\\media_capture.exe",
+                    //L"C:\\Program Files (x86)\\Seewo\\SeewoService\\SeewoService_1.5.4.3822\\rtcRemoteDesktop.exe"
+                };
+                for (size_t i = 0; i < exeList.size(); ++i) {
+                    std::wstring exe = exeList[i];
+                    std::wstring logMsg = L"[RestartSeewo] Starting: ";
+                    logMsg += exe;
+                    AppendLog(logMsg);
+                    // 检查文件是否存在
+                    DWORD attr = GetFileAttributesW(exe.c_str());
+                    if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                        AppendLog(L"[RestartSeewo] File not found: " + exe);
+                        continue;
+                    }
+                    // 构造带引号的命令行
+                    std::wstring cmdLine = L"\"" + exe + L"\"";
+                    STARTUPINFOW si = { sizeof(si) };
+                    PROCESS_INFORMATION pi = {};
+                    BOOL ok = CreateProcessW(exe.c_str(), (LPWSTR)cmdLine.c_str(), NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
+                    if (ok) {
+                        AppendLog(L"[RestartSeewo] Started successfully.");
+                        CloseHandle(pi.hProcess);
+                        CloseHandle(pi.hThread);
                     } else {
-                        AppendLog(L"[RestartSeewo] Failed to start: " + exe + L" Error: " + std::to_wstring(err));
+                        DWORD err = GetLastError();
+                        if (err == ERROR_ELEVATION_REQUIRED || err == 740) {
+                            AppendLog(L"[RestartSeewo] CreateProcessW elevation required, retrying with ShellExecuteW runas...");
+                            HINSTANCE hRes = ShellExecuteW(NULL, L"runas", exe.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                            if ((INT_PTR)hRes > 32) {
+                                AppendLog(L"[RestartSeewo] ShellExecuteW(runas) started successfully.");
+                            } else {
+                                AppendLog(L"[RestartSeewo] ShellExecuteW(runas) failed: " + std::to_wstring((INT_PTR)hRes));
+                            }
+                        } else {
+                            AppendLog(L"[RestartSeewo] Failed to start: " + exe + L" Error: " + std::to_wstring(err));
+                        }
+                    }
+                    Sleep(1000); // 等待1秒
+                }
+                // 3. 启动核心服务
+                {
+                    AppendLog(L"[RestartSeewo] Starting SeewoCoreService via SC...");
+                    SHELLEXECUTEINFOW sei = { sizeof(sei) };
+                    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+                    sei.lpVerb = L"open";
+                    sei.lpFile = L"sc";
+                    sei.lpParameters = L"start SeewoCoreService";
+                    sei.nShow = SW_HIDE;
+                    if (ShellExecuteExW(&sei)) {
+                        AppendLog(L"[RestartSeewo] SC command launched.");
+                        if (sei.hProcess) CloseHandle(sei.hProcess);
+                    } else {
+                        AppendLog(L"[RestartSeewo] Failed to launch SC. Error: " + std::to_wstring(GetLastError()));
                     }
                 }
-                Sleep(1000); // 等待1秒
+                AppendLog(L"[RestartSeewo] All done.");
+            }else{
+                AppendLog(L"[RestartSeewo] Error:Cannot find SeewoService path, aborting restart...");
             }
-            // 3. 启动核心服务
-            {
-                AppendLog(L"[RestartSeewo] Starting SeewoCoreService via SC...");
-                SHELLEXECUTEINFOW sei = { sizeof(sei) };
-                sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-                sei.lpVerb = L"open";
-                sei.lpFile = L"sc";
-                sei.lpParameters = L"start SeewoCoreService";
-                sei.nShow = SW_HIDE;
-                if (ShellExecuteExW(&sei)) {
-                    AppendLog(L"[RestartSeewo] SC command launched.");
-                    if (sei.hProcess) CloseHandle(sei.hProcess);
-                } else {
-                    AppendLog(L"[RestartSeewo] Failed to launch SC. Error: " + std::to_wstring(GetLastError()));
-                }
-            }
-            AppendLog(L"[RestartSeewo] All done.");
         } else if (msg == L"PerfectFreeze") {
             //std::wcout << L"[ACTION] PerfectFreeze triggered." << std::endl;
             {
@@ -959,30 +1004,6 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (LOWORD(wParam) == ID_TRAY_SHOWLOG) {
             ShowLogWindow((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), hwnd);
         } else if (LOWORD(wParam) == ID_TRAY_EXIT) {
-            // // 杀死当前用户下所有explorer.exe进程
-            // DWORD currentSessionId = 0;
-            // ProcessIdToSessionId(GetCurrentProcessId(), &currentSessionId);
-            // HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            // if (hSnap != INVALID_HANDLE_VALUE) {
-            //     PROCESSENTRY32W pe = { sizeof(pe) };
-            //     if (Process32FirstW(hSnap, &pe)) {
-            //         do {
-            //             if (_wcsicmp(pe.szExeFile, L"explorer.exe") == 0) {
-            //                 HANDLE hProc = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION, FALSE, pe.th32ProcessID);
-            //                 if (hProc) {
-            //                     DWORD sessionId = 0;
-            //                     if (ProcessIdToSessionId(pe.th32ProcessID, &sessionId) && sessionId == currentSessionId) {
-            //                         TerminateProcess(hProc, 0);
-            //                     }
-            //                     CloseHandle(hProc);
-            //                 }
-            //             }
-            //         } while (Process32NextW(hSnap, &pe));
-            //     }
-            //     CloseHandle(hSnap);
-            // }
-            // // 重启explorer.exe（当前用户权限）
-            // ShellExecuteW(NULL, NULL, L"explorer.exe", NULL, NULL, SW_SHOW);
             //使用当前活动用户权限重启explorer.exe
             RestartExplorerAsActiveUser();
             // 退出程序
