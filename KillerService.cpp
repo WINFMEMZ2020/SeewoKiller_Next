@@ -286,60 +286,120 @@ bool SuspendProcess(DWORD pid) {
     return status == 0;
 }
 
-volatile bool RunTopMost = true; // 控制是否启用去除最前端功能
 
+// =========================================================
+// 事件监听所需的全局变量
+// =========================================================
+volatile bool RunTopMost = true;
+HWINEVENTHOOK g_seewoHook = NULL;
+DWORD g_seewoPID = 0;
+
+// 判断是否是 SeewoServiceAssistant.exe 的窗口
+bool IsSeewoWindow(HWND hwnd) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    return pid == g_seewoPID;
+}
+
+// =========================================================
+// 事件回调：当 Seewo 的窗口显示 / 重排 Z序 时触发
+// =========================================================
+void CALLBACK SeewoWinEventProc(
+    HWINEVENTHOOK hook,
+    DWORD event,
+    HWND hwnd,
+    LONG idObject,
+    LONG idChild,
+    DWORD dwThread,
+    DWORD dwTime
+) {
+    // 必须是窗口对象
+    if (idObject != OBJID_WINDOW) return;
+
+    // 必须属于 Seewo 进程
+    if (!IsSeewoWindow(hwnd)) return;
+
+    // 用户开关控制（非常重要）
+    if (!RunTopMost) return;
+
+    // 小延迟避免闪烁太突兀
+    Sleep(20);
+
+    // 去除置顶属性
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+// =========================================================
+// 主线程：负责搜索 Seewo PID，并挂/卸 WinEventHook
+// =========================================================
 void DisableSeewoTopMost() {
+
     while (true) {
-        std::vector<DWORD> pids;
+
+        // -------------------------------------------------
+        // 1. 查找 SeewoServiceAssistant.exe 的 PID
+        // -------------------------------------------------
+        DWORD pid = 0;
         PROCESSENTRY32W pe = { sizeof(pe) };
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
         if (snap != INVALID_HANDLE_VALUE) {
             if (Process32FirstW(snap, &pe)) {
                 do {
                     if (_wcsicmp(pe.szExeFile, L"SeewoServiceAssistant.exe") == 0) {
-                        pids.push_back(pe.th32ProcessID);
+                        pid = pe.th32ProcessID;
+                        break;
                     }
                 } while (Process32NextW(snap, &pe));
             }
             CloseHandle(snap);
         }
-        for (DWORD pid : pids) {
-            struct EnumWindowsParam {
-                std::vector<HWND>* windows;
-                DWORD pid;
-            } param = { new std::vector<HWND>(), pid };
-            EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-                EnumWindowsParam* param = (EnumWindowsParam*)lParam;
-                DWORD windowPid;
-                GetWindowThreadProcessId(hwnd, &windowPid);
-                if (windowPid == param->pid) {
-                    param->windows->push_back(hwnd);
-                }
-                return TRUE;
-            }, (LPARAM)&param);
-            for (HWND hwnd : *param.windows) {
-                if(RunTopMost){
-                    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                    //std::wcout << L"[DisableTopMost] Disabled topmost for window: " << hwnd << std::endl;
-                    //{
-                    //    std::wstring logMsg = L"[DisableTopMost] Disabled topmost for window: " + std::to_wstring(reinterpret_cast<UINT_PTR>(hwnd));
-                    //    AppendLog(logMsg);
-                    //}
-                    
-                }else{
-                    //std::wcout << L"[DisableTopMost] Found window hwnd:" << hwnd << " ,skipped."<< std::endl;
-                    //{
-                    //    std::wstring logMsg = L"[DisableTopMost] Found window hwnd: " + std::to_wstring(reinterpret_cast<UINT_PTR>(hwnd)) + L" ,skipped.";
-                    //    AppendLog(logMsg);
-                    //}
-                }
-                
+
+        // -------------------------------------------------
+        // 2. 进程不存在 → 清理 hook
+        // -------------------------------------------------
+        if (pid == 0) {
+            if (g_seewoHook != NULL) {
+                UnhookWinEvent(g_seewoHook);
+                g_seewoHook = NULL;
             }
-            delete param.windows;
+            g_seewoPID = 0;
+
+            Sleep(1000);
+            continue;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+        // -------------------------------------------------
+        // 3. 找到新 PID → 挂 WinEventHook
+        // -------------------------------------------------
+        if (g_seewoPID != pid) {
+
+            g_seewoPID = pid;
+
+            // 清理旧 hook
+            if (g_seewoHook != NULL)
+                UnhookWinEvent(g_seewoHook);
+
+            // 监听窗口 Show + Z-order 变化
+            g_seewoHook = SetWinEventHook(
+                EVENT_OBJECT_SHOW,
+                EVENT_OBJECT_REORDER,
+                NULL,
+                SeewoWinEventProc,
+                pid,
+                0,
+                WINEVENT_SKIPOWNPROCESS | WINEVENT_OUTOFCONTEXT
+            );
+
+            AppendLog(L"[TopFix] Hook installed for Seewo PID: " + std::to_wstring(pid));
+        }
+
+        // 挂钩后无需频繁处理，等待事件回调即可
+        Sleep(2000);
     }
 }
+
 
 // SeewoKiller核心查杀任务，每1000ms查杀一次指定进程
 void KillSeewoTask() {
