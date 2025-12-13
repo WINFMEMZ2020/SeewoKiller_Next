@@ -772,14 +772,13 @@ void PipeWorker(HANDLE hPipe) {
             RunTopMost = true; // 启用去除最前端功能
         } else if(msg == L"WindowsVerified"){
             AppendLog(L"[log] WindowsVerified.");
-
         }
         else {
-            //std::wcout << L"[UNKNOWN ACTION] Received unknown command: " << msg << std::endl;
-            //{
-            //    std::wstring logMsg = L"[PIPE] Received unknown command: " + msg;
-            //    AppendLog(logMsg);
-            //}
+            // std::wcout << L"[UNKNOWN ACTION] Received unknown command: " << msg << std::endl;
+            // {
+            //     std::wstring logMsg = L"[PIPE] Received unknown command: " + msg;
+            //     AppendLog(logMsg);
+            // }
         }
         ZeroMemory(buffer, sizeof(buffer));
     }

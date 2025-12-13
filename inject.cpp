@@ -10,9 +10,15 @@
 #include <atomic>
 #include <wincrypt.h>
 #include <commctrl.h>
+#include <winternl.h>
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "comctl32.lib")
+
+extern "C" NTSTATUS NTAPI RtlGetVersion(
+    PRTL_OSVERSIONINFOW lpVersionInformation
+);
+
 
 // 新增：前向声明 Edit 子类过程（使用传统 SetWindowLongPtr / CallWindowProc 方式）
 LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -68,8 +74,30 @@ void SendPipeLog(const wchar_t* msg) {
     SendPipeCommand(buf);
 }
 
-#define NTSTATUS LONG
-#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+
+bool IsWindows10OrGreater()
+{
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll)
+        return false;
+
+    typedef NTSTATUS (NTAPI *RtlGetVersion_t)(PRTL_OSVERSIONINFOW);
+
+    auto pRtlGetVersion =
+        (RtlGetVersion_t)GetProcAddress(hNtdll, "RtlGetVersion");
+
+    if (!pRtlGetVersion)
+        return false;
+
+    RTL_OSVERSIONINFOW osvi = {};
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+
+    if (pRtlGetVersion(&osvi) != 0)
+        return false;
+
+    return osvi.dwMajorVersion >= 10;
+}
+
 
 enum ZBID
 {
@@ -527,6 +555,26 @@ void CreateSuperTopWindow()
     int mainWindowHeight = 270; // 增加高度以容纳新按钮
     int buttonWidth = 40;
     int buttonHeight = 60;
+
+
+    //check system version is windows 8/8.x,so WindowBand =  ZBID_UIACCESS
+    //if system is windows 10/11 so WindowBand = ZBID_ABOVELOCK_UX
+    DWORD WindowBand = ZBID_UIACCESS;
+    if (IsWindows10OrGreater()) {
+        WindowBand = ZBID_ABOVELOCK_UX;
+        // 延迟 2 秒再发送日志，避免创建初期管道未建立导致发送失败
+        std::thread([]() {
+            Sleep(2000);
+            SendPipeLog(L"[Band] Win10+ detected, using ZBID_ABOVELOCK_UX");
+        }).detach();
+    } else {
+        // 延迟 2 秒再发送日志，避免创建初期管道未建立导致发送失败
+        std::thread([]() {
+            Sleep(2000);
+            SendPipeLog(L"[Band] Win8 detected, using ZBID_UIACCESS");
+        }).detach();
+    }
+
     // 计算主窗口实际高度，避免遮挡任务栏
     int visibleMainWindowHeight = mainWindowHeight;
     if (taskbarHeight > 0 && mainWindowHeight > taskbarHeight) {
@@ -541,7 +589,7 @@ void CreateSuperTopWindow()
         WS_VISIBLE | WS_POPUP,
         screenWidth, menuY, mainWindowWidth, visibleMainWindowHeight, // 高度裁剪
         NULL, NULL, GetModuleHandle(NULL), NULL,
-        ZBID_UIACCESS
+        WindowBand
     );
 
     g_buttonWindow = CreateWindowInBand(
@@ -551,7 +599,7 @@ void CreateSuperTopWindow()
         WS_VISIBLE | WS_POPUP,
         screenWidth - buttonWidth, menuY, buttonWidth, buttonHeight, // 展开按钮位置正确
         NULL, NULL, GetModuleHandle(NULL), NULL,
-        ZBID_UIACCESS
+        WindowBand
     );
 
     if (g_mainWindow && g_buttonWindow)
@@ -578,7 +626,6 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved
 
         CreateWindowInBand = (CreateWindowInBand_t)GetProcAddress(hUser32, "CreateWindowInBand");
         if (!CreateWindowInBand) return FALSE;
-
         std::thread windowThread(CreateSuperTopWindow);
         windowThread.detach();
     }
