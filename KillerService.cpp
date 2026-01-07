@@ -19,6 +19,10 @@
 #include <strsafe.h>
 #include <commctrl.h>
 #include <deque>
+#include <sstream>
+#include <iomanip>
+#include <richedit.h>
+
 
 #include <wtsapi32.h>   // for WTSQueryUserToken, WTSGetActiveConsoleSessionId
 #include <userenv.h>    // for CreateEnvironmentBlock, DestroyEnvironmentBlock
@@ -40,9 +44,28 @@ constexpr size_t MAX_LOG_LINES = 1000;
 HWND g_hLogWnd = NULL; // 全局保存Log窗口句柄
 
 void AppendLog(const std::wstring& line) {
+    //Get now time
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    //format time
+    std::wstringstream ss;
+    ss << L"["
+       << std::setw(4) << std::setfill(L'0') << st.wYear << L"."
+       << std::setw(2) << std::setfill(L'0') << st.wMonth << L"."
+       << std::setw(2) << std::setfill(L'0') << st.wDay << L" "
+       << std::setw(2) << std::setfill(L'0') << st.wHour << L":"
+       << std::setw(2) << std::setfill(L'0') << st.wMinute << L":"
+       << std::setw(2) << std::setfill(L'0') << st.wSecond
+       << L"]\u3000"
+       << line;
+
+    std::wstring finalLine = ss.str();
+    
     std::lock_guard<std::mutex> lock(g_logMutex);
-    g_logLines.push_back(line);
-    if (g_logLines.size() > MAX_LOG_LINES) g_logLines.pop_front();
+    g_logLines.push_back(finalLine);
+    if (g_logLines.size() > MAX_LOG_LINES)
+        g_logLines.pop_front();
+
     if (g_hLogWnd && IsWindow(g_hLogWnd)) {
         PostMessageW(g_hLogWnd, WM_UPDATE_LOG, 0, 0);
     }
@@ -337,7 +360,7 @@ void DisableSeewoTopMost() {
             }
             delete param.windows;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
 
@@ -875,70 +898,105 @@ bool RestartExplorerAsActiveUser()
 
     return bRes == TRUE;
 }
-
-
 LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    static HWND hEdit;
+    static HWND hEdit = NULL;
+    static bool autoScroll = true;  // 是否允许自动滚动
+
     switch (msg) {
     case WM_CREATE:
-        hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", NULL,
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-            0, 0, 0, 0, hwnd, NULL, GetModuleHandleW(NULL), NULL);
+        hEdit = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            MSFTEDIT_CLASS,
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+            ES_MULTILINE | ES_READONLY,
+            0, 0, 0, 0,
+            hwnd,
+            NULL,
+            GetModuleHandleW(NULL),
+            NULL
+        );
+
+        // 设置等宽字体（日志更好看）
+        {
+            LOGFONTW lf = {0};
+            lf.lfHeight = -14;
+            wcscpy(lf.lfFaceName, L"Consolas");
+            HFONT hFont = CreateFontIndirectW(&lf);
+            SendMessageW(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+        }
+
+        // 初始填充已有日志
         {
             std::wstring log = GetAllLog();
-            SetWindowTextW(hEdit, log.c_str());
             SendMessageW(hEdit, EM_SETSEL, -1, -1);
-            SendMessageW(hEdit, EM_SCROLLCARET, 0, 0);
-            SendMessageW(hEdit, WM_VSCROLL, SB_BOTTOM, 0);
-            // 设置窗口标题
-            int remain = (int)(MAX_LOG_LINES - g_logLines.size());
-            wchar_t title[128];
-            swprintf(title, 128, L"SeewoKiller Log   Remaining messages:%d", remain);
-            SetWindowTextW(hwnd, title);
+            SendMessageW(hEdit, EM_REPLACESEL, FALSE, (LPARAM)log.c_str());
         }
         break;
+
     case WM_SIZE:
-        MoveWindow(hEdit, 0, 0, LOWORD(lParam), HIWORD(lParam), TRUE);
+        if (hEdit) {
+            MoveWindow(hEdit, 0, 0, LOWORD(lParam), HIWORD(lParam), TRUE);
+        }
         break;
+
+    case WM_MOUSEWHEEL:
+    case WM_VSCROLL:
+        // 用户一滚动，立刻关闭自动滚动
+        autoScroll = false;
+        break;
+
     case WM_UPDATE_LOG:
-        {
-            int firstLine = (int)SendMessageW(hEdit, EM_GETFIRSTVISIBLELINE, 0, 0);
-            int totalLines = (int)SendMessageW(hEdit, EM_GETLINECOUNT, 0, 0);
-            RECT rc; GetClientRect(hEdit, &rc);
-            TEXTMETRICW tm; HDC hdc = GetDC(hEdit);
-            HFONT hFont = (HFONT)SendMessageW(hEdit, WM_GETFONT, 0, 0);
-            HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-            GetTextMetricsW(hdc, &tm);
-            SelectObject(hdc, hOldFont);
-            ReleaseDC(hEdit, hdc);
-            int linesPerPage = (rc.bottom - rc.top) / tm.tmHeight;
-            bool atBottom = (firstLine + linesPerPage + 1 >= totalLines);
-            std::wstring log = GetAllLog();
-            SetWindowTextW(hEdit, log.c_str());
-            if (atBottom) {
-                SendMessageW(hEdit, EM_SETSEL, -1, -1);
-                SendMessageW(hEdit, EM_SCROLLCARET, 0, 0);
-                SendMessageW(hEdit, WM_VSCROLL, SB_BOTTOM, 0);
-            } else {
-                SendMessageW(hEdit, EM_LINESCROLL, 0, firstLine);
+        if (hEdit) {
+            // 判断是否在底部
+            SCROLLINFO si = { sizeof(si), SIF_POS | SIF_RANGE | SIF_PAGE };
+            GetScrollInfo(hEdit, SB_VERT, &si);
+            bool atBottom = (si.nPos + (int)si.nPage >= si.nMax - 2);
+
+            // 取最新一行
+            std::wstring lastLine;
+            {
+                std::lock_guard<std::mutex> lock(g_logMutex);
+                if (!g_logLines.empty())
+                    lastLine = g_logLines.back() + L"\r\n";
             }
-            // 设置窗口标题
+
+            if (!lastLine.empty()) {
+                // 追加文本
+                SendMessageW(hEdit, EM_SETSEL, -1, -1);
+                SendMessageW(hEdit, EM_REPLACESEL, FALSE, (LPARAM)lastLine.c_str());
+            }
+
+            if (atBottom) {
+                // ⭐ 精确滚动：只滚“差的那几行”
+                int firstVisible = (int)SendMessageW(hEdit, EM_GETFIRSTVISIBLELINE, 0, 0);
+                int totalLines   = (int)SendMessageW(hEdit, EM_GETLINECOUNT, 0, 0);
+
+                int delta = totalLines - firstVisible;
+                if (delta > 0)
+                    SendMessageW(hEdit, EM_LINESCROLL, 0, delta);
+            }
+
+            // 更新标题
             int remain = (int)(MAX_LOG_LINES - g_logLines.size());
             wchar_t title[128];
             swprintf(title, 128, L"SeewoKiller Log   Remaining messages:%d", remain);
             SetWindowTextW(hwnd, title);
         }
         break;
+
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);
         g_hLogWnd = NULL;
         return 0;
+
     case WM_DESTROY:
         g_hLogWnd = NULL;
         break;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
+
 
 void ShowLogWindow(HINSTANCE hInst, HWND hParent) {
     if (g_hLogWnd && IsWindow(g_hLogWnd)) {
@@ -954,7 +1012,7 @@ void ShowLogWindow(HINSTANCE hInst, HWND hParent) {
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
     RegisterClassW(&wc);
     g_hLogWnd = CreateWindowW(L"SeewoKillerLogWnd", L"SeewoKiller Log", WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 400, hParent, NULL, hInst, NULL);
+        CW_USEDEFAULT, CW_USEDEFAULT, 900, 600, hParent, NULL, hInst, NULL);
     ShowWindow(g_hLogWnd, SW_SHOWNORMAL);
     UpdateWindow(g_hLogWnd);
 }
@@ -1037,6 +1095,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     AppendLog(L"[SYSTEM] Entered SYSTEM main loop!");
     // 启动后台线程
     std::thread(DisableSeewoTopMost).detach();
+
+    //RichEdit初始化
+    LoadLibraryW(L"Msftedit.dll");  // RichEdit 4.1+
+
 
     // 注册主窗口类
     WNDCLASSW wc = {0};
