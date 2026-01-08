@@ -14,7 +14,8 @@ taskkill /f /im DisableSeewoTopMost.exe
 echo Compiling injector.exe...
 g++ -o injector.exe injector.cpp -luser32 -lkernel32 -static
 echo Compiling inject.dll...
-g++ -shared -o mainWindow.dll inject.cpp -lgdiplus -static -municode -lgdi32
+REM g++ -shared -o mainWindow.dll inject.cpp -lgdiplus -static -municode -lgdi32
+g++ -shared -o mainWindow.dll inject.cpp -Iimgui -Iimgui/backends imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp imgui/backends/imgui_impl_win32.cpp imgui/backends/imgui_impl_opengl3.cpp -lgdi32 -luser32 -lopengl32 -static -municode -lgdiplus -ldwmapi
 echo Compiling KillerService.exe...
 g++ -static -municode -mwindows -o KillerService.exe KillerService.cpp -lpsapi -lshell32 -ladvapi32 -lgdi32 -lwtsapi32 -luserenv
 REM g++ -static -municode -mwindows -o KillerService.exe KillerService.cpp -lpsapi -lshell32 -ladvapi32 -lgdi32

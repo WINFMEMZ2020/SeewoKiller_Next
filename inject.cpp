@@ -15,6 +15,22 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "comctl32.lib")
 
+
+#include "imgui.h"
+#include "backends/imgui_impl_win32.h"
+#include "backends/imgui_impl_opengl3.h"
+
+
+#include <gl/GL.h>
+
+LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND hWnd,
+    UINT msg,
+    WPARAM wParam,
+    LPARAM lParam
+);
+
+
 extern "C" NTSTATUS NTAPI RtlGetVersion(
     PRTL_OSVERSIONINFOW lpVersionInformation
 );
@@ -131,15 +147,24 @@ HWND g_buttonWindow = NULL;
 
 bool isMenuVisible = false; // 菜单是否可见
 
+int windowWidth  = 180;
+int windowHeight = 250;
+
 void ToggleMenuVisibility()
 {
     if (g_mainWindow && g_buttonWindow)
     {
-        int mainWindowWidth = 160;
-        int mainWindowHeight = 270; // 与CreateSuperTopWindow保持一致
+        RECT workArea{};
+        SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
+
+        int screenWidth  = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        
+        int mainWindowWidth = windowWidth;
+        int mainWindowHeight = windowHeight;
         int buttonWidth = 40;
         int buttonHeight = 60;
-        int menuY = screenHeight - mainWindowHeight; // 菜单展开时的 y 坐标
+        int menuY = workArea.bottom - windowHeight; // 菜单展开时的 y 坐标
 
         if (isMenuVisible)
         {
@@ -223,6 +248,19 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
         DrawPngIcon(hwnd, hdc);
         EndPaint(hwnd, &ps);
         return 0;
+    }
+    case WM_ERASEBKGND:
+    {
+        HDC hdc = (HDC)wParam;
+
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+
+        HBRUSH hBrush = CreateSolidBrush(RGB(240, 240, 240));
+        FillRect(hdc, &rc, hBrush);
+        DeleteObject(hBrush);
+
+        return 1; 
     }
     case WM_LBUTTONDOWN:
     {
@@ -433,188 +471,347 @@ void UpdateButtonPosition()
     }
 }
 
-#define IDC_CHECKBOX 1001
-#define IDC_BUTTON1 2001
-#define IDC_BUTTON2 2002
-#define IDC_BUTTON3 2003
-#define IDC_BUTTON4 2004 // RestartSeewo 按钮ID
-void AddControlsToMainWindow(HWND hwnd)
+// #define IDC_CHECKBOX 1001
+// #define IDC_BUTTON1 2001
+// #define IDC_BUTTON2 2002
+// #define IDC_BUTTON3 2003
+// #define IDC_BUTTON4 2004 // RestartSeewo 按钮ID
+// void AddControlsToMainWindow(HWND hwnd)
+// {
+//     CreateWindow(
+//         L"BUTTON",
+//         L"KillSeewo",
+//         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+//         10, 10, 140, 30,
+//         hwnd, (HMENU)IDC_BUTTON1, GetModuleHandle(NULL), NULL
+//     );
+
+//     CreateWindow(
+//         L"BUTTON",
+//         L"RestartSeewo",
+//         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+//         10, 50, 140, 30,
+//         hwnd, (HMENU)IDC_BUTTON4, GetModuleHandle(NULL), NULL
+//     );
+
+//     CreateWindow(
+//         L"BUTTON",
+//         L"PerfectFreeze",
+//         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+//         10, 90, 140, 30,
+//         hwnd, (HMENU)IDC_BUTTON2, GetModuleHandle(NULL), NULL
+//     );
+
+//     CreateWindow(
+//         L"BUTTON",
+//         L"UndoFreeze",
+//         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+//         10, 130, 140, 30,
+//         hwnd, (HMENU)IDC_BUTTON3, GetModuleHandle(NULL), NULL
+//     );
+
+//     HWND hCheck = CreateWindow(
+//         L"BUTTON",
+//         L"Disable Seewo Topmost",
+//         WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX | BS_MULTILINE,
+//         10, 170, 140, 50, // 向下移动以适应新增按钮
+//         hwnd, (HMENU)IDC_CHECKBOX, GetModuleHandle(NULL), NULL
+//     );
+//     if (hCheck) {
+//         SendMessage(hCheck, BM_SETCHECK, BST_CHECKED, 0); // 默认勾选
+//     }
+// }
+
+// LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+// {
+//     if (ImGui_ImplWin32_WndProcHandler(hwnd, uMsg, wParam, lParam))
+//     return true;
+
+//     switch (uMsg)
+//     {
+//     case WM_CREATE:
+//         AddControlsToMainWindow(hwnd); // 添加控件
+//         // 启动管道连接线程
+//         std::thread(ConnectToPipe).detach();
+//         return 0;
+//     case WM_COMMAND:
+//         if (LOWORD(wParam) == IDC_CHECKBOX && HIWORD(wParam) == BN_CLICKED) {
+//             HWND hCheck = (HWND)lParam;
+//             LRESULT checked = SendMessage(hCheck, BM_GETCHECK, 0, 0);
+//             wchar_t msg[64];
+//             swprintf_s(msg, L"CheckBox:%d", checked == BST_CHECKED ? 1 : 0);
+//             SendPipeCommand(msg);
+//         } else if (LOWORD(wParam) == IDC_BUTTON1 && HIWORD(wParam) == BN_CLICKED) {
+//             SendPipeCommand(L"KillSeewo");
+//         } else if (LOWORD(wParam) == IDC_BUTTON4 && HIWORD(wParam) == BN_CLICKED) {
+//             // RestartSeewo 按钮事件
+//             SendPipeCommand(L"RestartSeewo");
+//         } else if (LOWORD(wParam) == IDC_BUTTON2 && HIWORD(wParam) == BN_CLICKED) {
+//             SendPipeCommand(L"PerfectFreeze");
+//         } else if (LOWORD(wParam) == IDC_BUTTON3 && HIWORD(wParam) == BN_CLICKED) {
+//             SendPipeCommand(L"UndoFreeze");
+//         }
+//         break;
+//     case WM_SETCURSOR:
+//         SetCursor(LoadCursor(NULL, IDC_ARROW)); // 设置为默认箭头光标
+//         return TRUE;
+//     case WM_MOVE:
+//         UpdateButtonPosition();
+//         return 0;
+//     case WM_CLOSE:
+//         DestroyWindow(hwnd);
+//         return 0;
+//     case WM_DESTROY:
+//         PostQuitMessage(0);
+//         return 0;
+//     }
+//     return DefWindowProc(hwnd, uMsg, wParam, lParam);
+// }
+
+LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    CreateWindow(
-        L"BUTTON",
-        L"KillSeewo",
-        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        10, 10, 140, 30,
-        hwnd, (HMENU)IDC_BUTTON1, GetModuleHandle(NULL), NULL
-    );
+    if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+        return true;
 
-    CreateWindow(
-        L"BUTTON",
-        L"RestartSeewo",
-        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        10, 50, 140, 30,
-        hwnd, (HMENU)IDC_BUTTON4, GetModuleHandle(NULL), NULL
-    );
-
-    CreateWindow(
-        L"BUTTON",
-        L"PerfectFreeze",
-        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        10, 90, 140, 30,
-        hwnd, (HMENU)IDC_BUTTON2, GetModuleHandle(NULL), NULL
-    );
-
-    CreateWindow(
-        L"BUTTON",
-        L"UndoFreeze",
-        WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-        10, 130, 140, 30,
-        hwnd, (HMENU)IDC_BUTTON3, GetModuleHandle(NULL), NULL
-    );
-
-    HWND hCheck = CreateWindow(
-        L"BUTTON",
-        L"Disable Seewo Topmost",
-        WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX | BS_MULTILINE,
-        10, 170, 140, 50, // 向下移动以适应新增按钮
-        hwnd, (HMENU)IDC_CHECKBOX, GetModuleHandle(NULL), NULL
-    );
-    if (hCheck) {
-        SendMessage(hCheck, BM_SETCHECK, BST_CHECKED, 0); // 默认勾选
-    }
-}
-
-LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
-{
-    switch (uMsg)
+    switch (msg)
     {
-    case WM_CREATE:
-        AddControlsToMainWindow(hwnd); // 添加控件
-        // 启动管道连接线程
-        std::thread(ConnectToPipe).detach();
-        return 0;
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDC_CHECKBOX && HIWORD(wParam) == BN_CLICKED) {
-            HWND hCheck = (HWND)lParam;
-            LRESULT checked = SendMessage(hCheck, BM_GETCHECK, 0, 0);
-            wchar_t msg[64];
-            swprintf_s(msg, L"CheckBox:%d", checked == BST_CHECKED ? 1 : 0);
-            SendPipeCommand(msg);
-        } else if (LOWORD(wParam) == IDC_BUTTON1 && HIWORD(wParam) == BN_CLICKED) {
-            SendPipeCommand(L"KillSeewo");
-        } else if (LOWORD(wParam) == IDC_BUTTON4 && HIWORD(wParam) == BN_CLICKED) {
-            // RestartSeewo 按钮事件
-            SendPipeCommand(L"RestartSeewo");
-        } else if (LOWORD(wParam) == IDC_BUTTON2 && HIWORD(wParam) == BN_CLICKED) {
-            SendPipeCommand(L"PerfectFreeze");
-        } else if (LOWORD(wParam) == IDC_BUTTON3 && HIWORD(wParam) == BN_CLICKED) {
-            SendPipeCommand(L"UndoFreeze");
-        }
-        break;
     case WM_SETCURSOR:
-        SetCursor(LoadCursor(NULL, IDC_ARROW)); // 设置为默认箭头光标
+        SetCursor(LoadCursor(NULL, IDC_ARROW));
         return TRUE;
-    case WM_MOVE:
-        UpdateButtonPosition();
-        return 0;
-    case WM_CLOSE:
-        DestroyWindow(hwnd);
-        return 0;
+
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
     }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+
+    return DefWindowProc(hWnd, msg, wParam, lParam);
 }
+
+
 
 void CreateSuperTopWindow()
 {
     InitGDIPlus(); // 在窗口线程初始化GDI+
-    // 获取屏幕工作区（不包含任务栏）
-    RECT workArea = {0};
-    SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
-    int taskbarHeight = screenHeight - (workArea.bottom - workArea.top);
-
-    WNDCLASS wc = {0};
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    // =========================
+    // 1. 注册窗口类
+    // =========================
+    WNDCLASS wc = {};
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
     wc.lpfnWndProc = MainWindowProc;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hInstance = GetModuleHandle(nullptr);
     wc.lpszClassName = L"MainWindowClass";
     RegisterClass(&wc);
 
+    // =========================
+    // 2. 计算窗口位置
+    // =========================
+    RECT workArea{};
+    SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
+
+    int screenWidth  = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+
+    int posX = screenWidth - windowWidth;
+    int posY = workArea.bottom - windowHeight;
+
+
+
+    // =========================
+    // 3. 选择 WindowBand
+    // =========================
+    DWORD WindowBand = ZBID_UIACCESS;
+    if (IsWindows10OrGreater())
+        WindowBand = ZBID_ABOVELOCK_UX;
+
+    // =========================
+    // 4. 创建 Band 窗口
+    // =========================
+    g_mainWindow = CreateWindowInBand(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        L"MainWindowClass",
+        L"",
+        WS_POPUP | WS_VISIBLE,
+        posX, posY,
+        windowWidth, windowHeight,
+        nullptr, nullptr,
+        GetModuleHandle(nullptr),
+        nullptr,
+        WindowBand
+    );
+
+    if (!g_mainWindow)
+        return;
+
+        
+    // ====== 恢复展开按钮窗口（ButtonWindow）======
     WNDCLASS buttonWc = {0};
     buttonWc.style = CS_HREDRAW | CS_VREDRAW;
-    buttonWc.lpfnWndProc = ButtonWindowProc;
+    buttonWc.lpfnWndProc = ButtonWindowProc;  
     buttonWc.hInstance = GetModuleHandle(NULL);
     buttonWc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     buttonWc.lpszClassName = L"ButtonWindowClass";
     RegisterClass(&buttonWc);
 
-    int mainWindowWidth = 160; // 扩大两倍
-    int mainWindowHeight = 270; // 增加高度以容纳新按钮
     int buttonWidth = 40;
     int buttonHeight = 60;
-
-
-    //check system version is windows 8/8.x,so WindowBand =  ZBID_UIACCESS
-    //if system is windows 10/11 so WindowBand = ZBID_ABOVELOCK_UX
-    DWORD WindowBand = ZBID_UIACCESS;
-    if (IsWindows10OrGreater()) {
-        WindowBand = ZBID_ABOVELOCK_UX;
-        // 延迟 2 秒再发送日志，避免创建初期管道未建立导致发送失败
-        std::thread([]() {
-            Sleep(2000);
-            SendPipeLog(L"[Band] Win10+ detected, using ZBID_ABOVELOCK_UX");
-        }).detach();
-    } else {
-        // 延迟 2 秒再发送日志，避免创建初期管道未建立导致发送失败
-        std::thread([]() {
-            Sleep(2000);
-            SendPipeLog(L"[Band] Win8 detected, using ZBID_UIACCESS");
-        }).detach();
-    }
-
-    // 计算主窗口实际高度，避免遮挡任务栏
-    int visibleMainWindowHeight = mainWindowHeight;
-    if (taskbarHeight > 0 && mainWindowHeight > taskbarHeight) {
-        visibleMainWindowHeight = mainWindowHeight - taskbarHeight;
-    }
-    int menuY = screenHeight - mainWindowHeight; // 保持原有y坐标
-
-    g_mainWindow = CreateWindowInBand(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        L"MainWindowClass",
-        NULL,
-        WS_VISIBLE | WS_POPUP,
-        screenWidth, menuY, mainWindowWidth, visibleMainWindowHeight, // 高度裁剪
-        NULL, NULL, GetModuleHandle(NULL), NULL,
-        WindowBand
-    );
+    int menuY = screenHeight - windowHeight;  // 和主窗口对齐
 
     g_buttonWindow = CreateWindowInBand(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         L"ButtonWindowClass",
         NULL,
         WS_VISIBLE | WS_POPUP,
-        screenWidth - buttonWidth, menuY, buttonWidth, buttonHeight, // 展开按钮位置正确
+        screenWidth - buttonWidth, menuY,
+        buttonWidth, buttonHeight,
         NULL, NULL, GetModuleHandle(NULL), NULL,
         WindowBand
     );
 
-    if (g_mainWindow && g_buttonWindow)
+    // 初始状态：菜单隐藏，只显示按钮
+    isMenuVisible = false;
+
+    //重置窗口状态，确保窗口与按钮位置正确
+    ToggleMenuVisibility();
+    ToggleMenuVisibility();
+    
+    
+    //OpenGL Context 初始化
+    HDC hdc = GetDC(g_mainWindow);
+
+    PIXELFORMATDESCRIPTOR pfd = {};
+    pfd.nSize      = sizeof(pfd);
+    pfd.nVersion   = 1;
+    pfd.dwFlags    = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 32;
+    pfd.cDepthBits = 24;
+    pfd.iLayerType = PFD_MAIN_PLANE;
+
+    int pf = ChoosePixelFormat(hdc, &pfd);
+    SetPixelFormat(hdc, pf, &pfd);
+
+    HGLRC glrc = wglCreateContext(hdc);
+    wglMakeCurrent(hdc, glrc);
+
+    //imgui初始化
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear();
+    io.Fonts->AddFontFromFileTTF(
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        22.0f
+    );
+
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
+    ImGui::StyleColorsLight();
+
+    ImGui_ImplWin32_Init(g_mainWindow);
+    ImGui_ImplOpenGL3_Init("#version 130");
+
+    //启动管道
+    std::thread(ConnectToPipe).detach();
+
+    // 消息与渲染循环
+    MSG msg{};
+    bool running = true;
+
+    while (running)
     {
-        // 强制重绘，确保首次显示时就绘制
-        InvalidateRect(g_buttonWindow, NULL, TRUE);
-        UpdateWindow(g_buttonWindow);
-        MSG msg;
-        while (GetMessage(&msg, NULL, 0, 0))
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
         {
+            if (msg.message == WM_QUIT)
+            {
+                running = false;
+                break;
+            }
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+
+
+        //UI渲染
+
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+
+
+
+        ImGui::Begin(
+            "##MainPanel",
+            nullptr,
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoCollapse
+        );
+
+        int MainButtonHeight = 40;
+        // KillSeewo
+        if (ImGui::Button("KillSeewo", ImVec2(-1, MainButtonHeight)))
+            SendPipeCommand(L"KillSeewo");
+
+        // RestartSeewo
+        if (ImGui::Button("RestartSeewo", ImVec2(-1, MainButtonHeight)))
+            SendPipeCommand(L"RestartSeewo");
+
+        // PerfectFreeze
+        if (ImGui::Button("PerfectFreeze", ImVec2(-1, MainButtonHeight)))
+            SendPipeCommand(L"PerfectFreeze");
+
+        // UndoFreeze
+        if (ImGui::Button("UndoFreeze", ImVec2(-1, MainButtonHeight)))
+            SendPipeCommand(L"UndoFreeze");
+
+        // Checkbox（保持原语义）
+        static bool disableTop = true;
+
+        // 复选框
+        if (ImGui::Checkbox("##disableTopmost", &disableTop))
+        {
+            wchar_t buf[64];
+            swprintf_s(buf, L"CheckBox:%d", disableTop ? 1 : 0);
+            SendPipeCommand(buf);
+        }
+
+        // 让文字紧挨着复选框右边
+        ImGui::SameLine(0.0f, 10.0f);  
+        ImGui::TextWrapped("Disable Seewo Topmost");
+        ImGui::End();
+
+        // 渲染
+        ImGui::Render();
+
+        glViewport(
+            0, 0,
+            (int)io.DisplaySize.x,
+            (int)io.DisplaySize.y
+        );
+
+        glClearColor(0.08f, 0.08f, 0.08f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        SwapBuffers(hdc);
     }
-    ShutdownGDIPlus(); // 在窗口线程销毁GDI+
+
+    // 资源清理
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+
+    wglMakeCurrent(nullptr, nullptr);
+    wglDeleteContext(glrc);
+    ReleaseDC(g_mainWindow, hdc);
+
+    ShutdownGDIPlus();
+    
 }
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)

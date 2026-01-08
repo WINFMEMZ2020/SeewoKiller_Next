@@ -40,6 +40,8 @@ std::atomic<bool> killSeewoStarted{false}; // 全局声明，放在所有函数�
 std::mutex g_logMutex;
 std::deque<std::wstring> g_logLines;
 constexpr size_t MAX_LOG_LINES = 1000;
+size_t g_logShownIndex = 0;
+
 
 HWND g_hLogWnd = NULL; // 全局保存Log窗口句柄
 
@@ -916,8 +918,7 @@ LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             GetModuleHandleW(NULL),
             NULL
         );
-
-        // 设置等宽字体（日志更好看）
+        
         {
             LOGFONTW lf = {0};
             lf.lfHeight = -14;
@@ -929,6 +930,10 @@ LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         // 初始填充已有日志
         {
             std::wstring log = GetAllLog();
+            {
+                std::lock_guard<std::mutex> lock(g_logMutex);
+                g_logShownIndex = g_logLines.size();
+            }
             SendMessageW(hEdit, EM_SETSEL, -1, -1);
             SendMessageW(hEdit, EM_REPLACESEL, FALSE, (LPARAM)log.c_str());
         }
@@ -947,42 +952,43 @@ LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
 
     case WM_UPDATE_LOG:
-        if (hEdit) {
-            // 判断是否在底部
-            SCROLLINFO si = { sizeof(si), SIF_POS | SIF_RANGE | SIF_PAGE };
-            GetScrollInfo(hEdit, SB_VERT, &si);
-            bool atBottom = (si.nPos + (int)si.nPage >= si.nMax - 2);
+    {
+        if (!hEdit) break;
 
-            // 取最新一行
-            std::wstring lastLine;
-            {
-                std::lock_guard<std::mutex> lock(g_logMutex);
-                if (!g_logLines.empty())
-                    lastLine = g_logLines.back() + L"\r\n";
+        // 判断是否在底部
+        SCROLLINFO si = { sizeof(si), SIF_POS | SIF_RANGE | SIF_PAGE };
+        GetScrollInfo(hEdit, SB_VERT, &si);
+        bool atBottom = (si.nPos + (int)si.nPage >= si.nMax - 2);
+
+        std::wstring toAppend;
+
+        {
+            std::lock_guard<std::mutex> lock(g_logMutex);
+
+            // ⭐ 把“还没显示过的所有日志”一次性追加
+            while (g_logShownIndex < g_logLines.size()) {
+                toAppend += g_logLines[g_logShownIndex];
+                toAppend += L"\r\n";
+                ++g_logShownIndex;
             }
-
-            if (!lastLine.empty()) {
-                // 追加文本
-                SendMessageW(hEdit, EM_SETSEL, -1, -1);
-                SendMessageW(hEdit, EM_REPLACESEL, FALSE, (LPARAM)lastLine.c_str());
-            }
-
-            if (atBottom) {
-                // ⭐ 精确滚动：只滚“差的那几行”
-                int firstVisible = (int)SendMessageW(hEdit, EM_GETFIRSTVISIBLELINE, 0, 0);
-                int totalLines   = (int)SendMessageW(hEdit, EM_GETLINECOUNT, 0, 0);
-
-                int delta = totalLines - firstVisible;
-                if (delta > 0)
-                    SendMessageW(hEdit, EM_LINESCROLL, 0, delta);
-            }
-
-            // 更新标题
-            int remain = (int)(MAX_LOG_LINES - g_logLines.size());
-            wchar_t title[128];
-            swprintf(title, 128, L"SeewoKiller Log   Remaining messages:%d", remain);
-            SetWindowTextW(hwnd, title);
         }
+
+        if (!toAppend.empty()) {
+            SendMessageW(hEdit, EM_SETSEL, -1, -1);
+            SendMessageW(hEdit, EM_REPLACESEL, FALSE, (LPARAM)toAppend.c_str());
+        }
+
+        if (atBottom) {
+            SendMessageW(hEdit, EM_SETSEL, -1, -1);
+            SendMessageW(hEdit, EM_SCROLLCARET, 0, 0);
+        }
+
+        // 更新标题
+        int remain = (int)(MAX_LOG_LINES - g_logLines.size());
+        wchar_t title[128];
+        swprintf(title, 128, L"SeewoKiller Log   Remaining messages:%d", remain);
+        SetWindowTextW(hwnd, title);
+    }
         break;
 
     case WM_CLOSE:
