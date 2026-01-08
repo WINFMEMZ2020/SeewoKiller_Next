@@ -471,103 +471,6 @@ void UpdateButtonPosition()
     }
 }
 
-// #define IDC_CHECKBOX 1001
-// #define IDC_BUTTON1 2001
-// #define IDC_BUTTON2 2002
-// #define IDC_BUTTON3 2003
-// #define IDC_BUTTON4 2004 // RestartSeewo 按钮ID
-// void AddControlsToMainWindow(HWND hwnd)
-// {
-//     CreateWindow(
-//         L"BUTTON",
-//         L"KillSeewo",
-//         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-//         10, 10, 140, 30,
-//         hwnd, (HMENU)IDC_BUTTON1, GetModuleHandle(NULL), NULL
-//     );
-
-//     CreateWindow(
-//         L"BUTTON",
-//         L"RestartSeewo",
-//         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-//         10, 50, 140, 30,
-//         hwnd, (HMENU)IDC_BUTTON4, GetModuleHandle(NULL), NULL
-//     );
-
-//     CreateWindow(
-//         L"BUTTON",
-//         L"PerfectFreeze",
-//         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-//         10, 90, 140, 30,
-//         hwnd, (HMENU)IDC_BUTTON2, GetModuleHandle(NULL), NULL
-//     );
-
-//     CreateWindow(
-//         L"BUTTON",
-//         L"UndoFreeze",
-//         WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-//         10, 130, 140, 30,
-//         hwnd, (HMENU)IDC_BUTTON3, GetModuleHandle(NULL), NULL
-//     );
-
-//     HWND hCheck = CreateWindow(
-//         L"BUTTON",
-//         L"Disable Seewo Topmost",
-//         WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX | BS_MULTILINE,
-//         10, 170, 140, 50, // 向下移动以适应新增按钮
-//         hwnd, (HMENU)IDC_CHECKBOX, GetModuleHandle(NULL), NULL
-//     );
-//     if (hCheck) {
-//         SendMessage(hCheck, BM_SETCHECK, BST_CHECKED, 0); // 默认勾选
-//     }
-// }
-
-// LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
-// {
-//     if (ImGui_ImplWin32_WndProcHandler(hwnd, uMsg, wParam, lParam))
-//     return true;
-
-//     switch (uMsg)
-//     {
-//     case WM_CREATE:
-//         AddControlsToMainWindow(hwnd); // 添加控件
-//         // 启动管道连接线程
-//         std::thread(ConnectToPipe).detach();
-//         return 0;
-//     case WM_COMMAND:
-//         if (LOWORD(wParam) == IDC_CHECKBOX && HIWORD(wParam) == BN_CLICKED) {
-//             HWND hCheck = (HWND)lParam;
-//             LRESULT checked = SendMessage(hCheck, BM_GETCHECK, 0, 0);
-//             wchar_t msg[64];
-//             swprintf_s(msg, L"CheckBox:%d", checked == BST_CHECKED ? 1 : 0);
-//             SendPipeCommand(msg);
-//         } else if (LOWORD(wParam) == IDC_BUTTON1 && HIWORD(wParam) == BN_CLICKED) {
-//             SendPipeCommand(L"KillSeewo");
-//         } else if (LOWORD(wParam) == IDC_BUTTON4 && HIWORD(wParam) == BN_CLICKED) {
-//             // RestartSeewo 按钮事件
-//             SendPipeCommand(L"RestartSeewo");
-//         } else if (LOWORD(wParam) == IDC_BUTTON2 && HIWORD(wParam) == BN_CLICKED) {
-//             SendPipeCommand(L"PerfectFreeze");
-//         } else if (LOWORD(wParam) == IDC_BUTTON3 && HIWORD(wParam) == BN_CLICKED) {
-//             SendPipeCommand(L"UndoFreeze");
-//         }
-//         break;
-//     case WM_SETCURSOR:
-//         SetCursor(LoadCursor(NULL, IDC_ARROW)); // 设置为默认箭头光标
-//         return TRUE;
-//     case WM_MOVE:
-//         UpdateButtonPosition();
-//         return 0;
-//     case WM_CLOSE:
-//         DestroyWindow(hwnd);
-//         return 0;
-//     case WM_DESTROY:
-//         PostQuitMessage(0);
-//         return 0;
-//     }
-//     return DefWindowProc(hwnd, uMsg, wParam, lParam);
-// }
-
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
@@ -592,9 +495,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 void CreateSuperTopWindow()
 {
     InitGDIPlus(); // 在窗口线程初始化GDI+
-    // =========================
-    // 1. 注册窗口类
-    // =========================
+
     WNDCLASS wc = {};
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
     wc.lpfnWndProc = MainWindowProc;
@@ -602,9 +503,7 @@ void CreateSuperTopWindow()
     wc.lpszClassName = L"MainWindowClass";
     RegisterClass(&wc);
 
-    // =========================
-    // 2. 计算窗口位置
-    // =========================
+    // 计算位置
     RECT workArea{};
     SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
 
@@ -615,18 +514,10 @@ void CreateSuperTopWindow()
     int posX = screenWidth - windowWidth;
     int posY = workArea.bottom - windowHeight;
 
-
-
-    // =========================
-    // 3. 选择 WindowBand
-    // =========================
     DWORD WindowBand = ZBID_UIACCESS;
     if (IsWindows10OrGreater())
         WindowBand = ZBID_ABOVELOCK_UX;
 
-    // =========================
-    // 4. 创建 Band 窗口
-    // =========================
     g_mainWindow = CreateWindowInBand(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         L"MainWindowClass",
@@ -644,7 +535,7 @@ void CreateSuperTopWindow()
         return;
 
         
-    // ====== 恢复展开按钮窗口（ButtonWindow）======
+    //窗口小窗
     WNDCLASS buttonWc = {0};
     buttonWc.style = CS_HREDRAW | CS_VREDRAW;
     buttonWc.lpfnWndProc = ButtonWindowProc;  
