@@ -150,6 +150,8 @@ bool isMenuVisible = false; // 菜单是否可见
 int windowWidth  = 180;
 int windowHeight = 250;
 
+static HWND passwordWindowHWND = NULL;// 防止多次打开密码窗口
+
 void ToggleMenuVisibility()
 {
     if (g_mainWindow && g_buttonWindow)
@@ -276,6 +278,11 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
             DWORD attr = GetFileAttributesW(path);
             if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
                 // 存在password文件，读取内容并弹窗显示MD5
+                if((passwordWindowHWND != NULL) && IsWindow(passwordWindowHWND)) {
+                    SetForegroundWindow(passwordWindowHWND);
+                    SetActiveWindow(passwordWindowHWND);
+                    return 0;
+                }
                 HANDLE hFile = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
                 if (hFile != INVALID_HANDLE_VALUE) {
                     char buf[64] = {0};
@@ -287,6 +294,9 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
                     //MessageBoxW(hwnd, g_password_md5, L"Password MD5", MB_OK);
                 }
                 // 注册密码窗口类
+
+
+
                 static bool pwClassRegistered = false;
                 if (!pwClassRegistered) {
                     WNDCLASS pwc = {0};
@@ -398,6 +408,7 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
                                 if (wcscmp(md5w, g_password_md5) == 0) {
                                     //MessageBoxW(hwnd, L"true", L"验证结果", MB_OK);
                                     ToggleMenuVisibility();
+                                    passwordWindowHWND = NULL;
                                     SendPipeCommand(L"WindowsVerified");
                                     DestroyWindow(hwnd);
                                 }else{
@@ -413,6 +424,7 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
                             }
                             break;
                         case WM_CLOSE:
+                            passwordWindowHWND = NULL;
                             DestroyWindow(hwnd);
                             return 0;
                         case WM_DESTROY:
@@ -439,6 +451,8 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
                     NULL, NULL, GetModuleHandle(NULL), NULL,
                     ZBID_UIACCESS
                 );
+                passwordWindowHWND = pwWnd;
+
                 ShowWindow(pwWnd, SW_SHOW);
                 UpdateWindow(pwWnd);
                 return 0;
