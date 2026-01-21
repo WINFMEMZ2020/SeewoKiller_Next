@@ -900,12 +900,58 @@ bool RestartExplorerAsActiveUser()
 
     return bRes == TRUE;
 }
-LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    static HWND hEdit = NULL;
-    static bool autoScroll = true;  // 是否允许自动滚动
 
-    switch (msg) {
+// 判断最后一行是否可见
+bool IsLastLineVisible(HWND hEdit)
+{
+    if (!IsWindow(hEdit)) return true;
+
+    // 当前可见的第一行
+    int firstVisible = (int)SendMessageW(hEdit, EM_GETFIRSTVISIBLELINE, 0, 0);
+    // 总行数
+    int totalLines = (int)SendMessageW(hEdit, EM_GETLINECOUNT, 0, 0);
+
+    // 获取可视矩形（编辑控件内部客户区）
+    RECT rc = {0};
+    SendMessageW(hEdit, EM_GETRECT, 0, (LPARAM)&rc);
+
+    // 获取行高（用当前字体的 TEXTMETRIC）
+    TEXTMETRICW tm = {0};
+    HDC hdc = GetDC(hEdit);
+    if (hdc) {
+        HFONT hFont = (HFONT)SendMessageW(hEdit, WM_GETFONT, 0, 0);
+        HFONT old = (HFONT)SelectObject(hdc, hFont);
+        GetTextMetricsW(hdc, &tm);
+        SelectObject(hdc, old);
+        ReleaseDC(hEdit, hdc);
+    }
+    int lineHeight = tm.tmHeight;
+    if (lineHeight <= 0) lineHeight = 16; // 保底
+
+    int viewHeight = rc.bottom - rc.top;
+    int linesPerPage = viewHeight / lineHeight;
+    if (linesPerPage < 1) linesPerPage = 1;
+
+    // 如果第一可见行 + 一页行数 >= 总行数，则最后一行可见
+    return (firstVisible + linesPerPage >= totalLines);
+}
+
+
+void ScrollEditToBottom(HWND hEdit)
+{
+    if (!IsWindow(hEdit)) return;
+    SendMessageW(hEdit, EM_SCROLL, SB_BOTTOM, 0);
+}
+
+LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    static HWND hEdit = NULL;
+    static bool s_needInitialScroll = false;
+
+    switch (msg)
+    {
     case WM_CREATE:
+    {
         hEdit = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             MSFTEDIT_CLASS,
@@ -918,14 +964,13 @@ LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             GetModuleHandleW(NULL),
             NULL
         );
-        
-        {
-            LOGFONTW lf = {0};
-            lf.lfHeight = -14;
-            wcscpy(lf.lfFaceName, L"Consolas");
-            HFONT hFont = CreateFontIndirectW(&lf);
-            SendMessageW(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
-        }
+
+        // 字体
+        LOGFONTW lf = {};
+        lf.lfHeight = -14;
+        wcscpy_s(lf.lfFaceName, L"Consolas");
+        HFONT hFont = CreateFontIndirectW(&lf);
+        SendMessageW(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         // 初始填充已有日志
         {
@@ -934,62 +979,76 @@ LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 std::lock_guard<std::mutex> lock(g_logMutex);
                 g_logShownIndex = g_logLines.size();
             }
+            // 直接插入并滚到底（初始时我们总是滚到底）
             SendMessageW(hEdit, EM_SETSEL, -1, -1);
             SendMessageW(hEdit, EM_REPLACESEL, FALSE, (LPARAM)log.c_str());
+            // 这一步：ScrollEditToBottom 保证视图到底
+            ScrollEditToBottom(hEdit);
+        }
+        // 更新窗口标题
+        {
+            int remain = (int)(MAX_LOG_LINES - g_logLines.size());
+            wchar_t title[128];
+            swprintf_s(title, sizeof(title)/sizeof(title[0]), L"SeewoKiller Log   Remaining messages: %d", remain);
+            SetWindowTextW(hwnd, title);
+        }
+        // 标记窗口刚创建时滚动到底
+        if(hEdit){
+            s_needInitialScroll = true;
         }
         break;
+    }
 
     case WM_SIZE:
-        if (hEdit) {
+        if (hEdit)
+        {
             MoveWindow(hEdit, 0, 0, LOWORD(lParam), HIWORD(lParam), TRUE);
+            if(s_needInitialScroll){//需要滚动到最底部
+                ScrollEditToBottom(hEdit);
+                s_needInitialScroll = false;
+            }
         }
-        break;
-
-    case WM_MOUSEWHEEL:
-    case WM_VSCROLL:
-        // 用户一滚动，立刻关闭自动滚动
-        autoScroll = false;
         break;
 
     case WM_UPDATE_LOG:
     {
         if (!hEdit) break;
 
-        // 判断是否在底部
-        SCROLLINFO si = { sizeof(si), SIF_POS | SIF_RANGE | SIF_PAGE };
-        GetScrollInfo(hEdit, SB_VERT, &si);
-        bool atBottom = (si.nPos + (int)si.nPage >= si.nMax - 2);
+        // 在追加前判断视图是否在底部
+        bool wasAtBottom = IsLastLineVisible(hEdit);
 
         std::wstring toAppend;
-
         {
             std::lock_guard<std::mutex> lock(g_logMutex);
-
-            // ⭐ 把“还没显示过的所有日志”一次性追加
-            while (g_logShownIndex < g_logLines.size()) {
-                toAppend += g_logLines[g_logShownIndex];
+            while (g_logShownIndex < g_logLines.size())
+            {
+                toAppend += g_logLines[g_logShownIndex++];
                 toAppend += L"\r\n";
-                ++g_logShownIndex;
             }
         }
 
-        if (!toAppend.empty()) {
+        if (!toAppend.empty())
+        {
+            // 插入新文本
             SendMessageW(hEdit, EM_SETSEL, -1, -1);
             SendMessageW(hEdit, EM_REPLACESEL, FALSE, (LPARAM)toAppend.c_str());
         }
 
-        if (atBottom) {
-            SendMessageW(hEdit, EM_SETSEL, -1, -1);
-            SendMessageW(hEdit, EM_SCROLLCARET, 0, 0);
+        // 只有之前就在底部，才执行滚动到底
+        if (wasAtBottom)
+        {
+            ScrollEditToBottom(hEdit);
         }
 
-        // 更新标题
-        int remain = (int)(MAX_LOG_LINES - g_logLines.size());
-        wchar_t title[128];
-        swprintf(title, 128, L"SeewoKiller Log   Remaining messages:%d", remain);
-        SetWindowTextW(hwnd, title);
-    }
+        // 更新窗口标题
+        {
+            int remain = (int)(MAX_LOG_LINES - g_logLines.size());
+            wchar_t title[128];
+            swprintf_s(title, sizeof(title)/sizeof(title[0]), L"SeewoKiller Log   Remaining messages: %d", remain);
+            SetWindowTextW(hwnd, title);
+        }
         break;
+    }
 
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);
@@ -1000,8 +1059,10 @@ LRESULT CALLBACK LogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_hLogWnd = NULL;
         break;
     }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
+
 
 
 void ShowLogWindow(HINSTANCE hInst, HWND hParent) {
@@ -1017,7 +1078,7 @@ void ShowLogWindow(HINSTANCE hInst, HWND hParent) {
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
     RegisterClassW(&wc);
-    g_hLogWnd = CreateWindowW(L"SeewoKillerLogWnd", L"SeewoKiller Log", WS_OVERLAPPEDWINDOW,
+    g_hLogWnd = CreateWindowW(L"SeewoKillerLogWnd", L"SeewoKiller Log   Remaining messages: ", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 900, 600, hParent, NULL, hInst, NULL);
     ShowWindow(g_hLogWnd, SW_SHOWNORMAL);
     UpdateWindow(g_hLogWnd);
