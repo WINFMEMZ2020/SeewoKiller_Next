@@ -603,6 +603,7 @@ void CreateSuperTopWindow()
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr; //禁止imgui.ini文件生成
     io.Fonts->Clear();
     io.Fonts->AddFontFromFileTTF(
         "C:\\Windows\\Fonts\\msyh.ttc",
