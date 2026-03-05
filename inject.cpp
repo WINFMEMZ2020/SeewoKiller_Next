@@ -659,6 +659,16 @@ void CreateSuperTopWindow()
         );
 
         int MainButtonHeight = 40;
+
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.FrameRounding = 5.0f;      // 按钮、输入框、复选框圆角
+        style.GrabRounding = 5.0f;       // 滑块圆角
+        style.PopupRounding = 5.0f;      // 菜单/弹窗圆角
+
+        // 按钮边框
+        style.FrameBorderSize = 1.0f;
+
+
         // KillSeewo
         if (ImGui::Button("KillSeewo", ImVec2(-1, MainButtonHeight)))
             SendPipeCommand(L"KillSeewo");

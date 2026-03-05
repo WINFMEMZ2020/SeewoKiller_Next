@@ -50,6 +50,12 @@
 //#define IMGUI_IMPL_VULKAN_VOLK_FILENAME    <volk.h>       // Default
 // Reminder: make those changes in your imconfig.h file, not here!
 
+// Clang/GCC warnings with -Weverything
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wold-style-cast" // warning: use of old-style cast
+#endif
+
 #if defined(IMGUI_IMPL_VULKAN_NO_PROTOTYPES) && !defined(VK_NO_PROTOTYPES)
 #define VK_NO_PROTOTYPES
 #endif
@@ -77,7 +83,6 @@
 // Specify settings to create pipeline and swapchain
 struct ImGui_ImplVulkan_PipelineInfo
 {
-    // For Main and Secondary viewports
     VkRenderPass                    RenderPass;                     // Ignored if using dynamic rendering
     uint32_t                        Subpass;                        //
     VkSampleCountFlagBits           MSAASamples = {};               // 0 defaults to VK_SAMPLE_COUNT_1_BIT
@@ -143,7 +148,7 @@ IMGUI_IMPL_API void             ImGui_ImplVulkan_SetMinImageCount(uint32_t min_i
 // Else, the pipeline can be created, or re-created, using ImGui_ImplVulkan_CreateMainPipeline() before rendering.
 IMGUI_IMPL_API void             ImGui_ImplVulkan_CreateMainPipeline(const ImGui_ImplVulkan_PipelineInfo* info);
 
-// (Advanced) Use e.g. if you need to precisely control the timing of texture updates (e.g. for staged rendering), by setting ImDrawData::Textures = NULL to handle this manually.
+// (Advanced) Use e.g. if you need to precisely control the timing of texture updates (e.g. for staged rendering), by setting ImDrawData::Textures = nullptr to handle this manually.
 IMGUI_IMPL_API void             ImGui_ImplVulkan_UpdateTexture(ImTextureData* tex);
 
 // Register a texture (VkDescriptorSet == ImTextureID)
@@ -172,6 +177,7 @@ struct ImGui_ImplVulkan_RenderState
 // Used by example's main.cpp. Used by multi-viewport features. PROBABLY NOT used by your own engine/app.
 //
 // You probably do NOT need to use or care about those functions.
+// WE DO NOT PROVIDE STRONG GUARANTEES OF BACKWARD/FORWARD COMPATIBILITY.
 // Those functions only exist because:
 //   1) they facilitate the readability and maintenance of the multiple main.cpp examples files.
 //   2) the multi-viewport / platform window implementation needs them internally.
@@ -181,8 +187,6 @@ struct ImGui_ImplVulkan_RenderState
 // Your engine/app will likely _already_ have code to setup all that stuff (swap chain,
 // render pass, frame buffers, etc.). You may read this code if you are curious, but
 // it is recommended you use your own custom tailored code to do equivalent work.
-//
-// We don't provide a strong guarantee that we won't change those functions API.
 //
 // The ImGui_ImplVulkanH_XXX functions should NOT interact with any of the state used
 // by the regular ImGui_ImplVulkan_XXX functions.
@@ -225,6 +229,7 @@ struct ImGui_ImplVulkanH_Window
 {
     // Input
     bool                    UseDynamicRendering;
+    VkSurfaceKHR            Surface;            // Surface created and destroyed by caller.
     VkSurfaceFormatKHR      SurfaceFormat;
     VkPresentModeKHR        PresentMode;
     VkAttachmentDescription AttachmentDesc;     // RenderPass creation: main attachment description.
@@ -234,7 +239,6 @@ struct ImGui_ImplVulkanH_Window
     int                     Width;              // Generally same as passed to ImGui_ImplVulkanH_CreateOrResizeWindow()
     int                     Height;
     VkSwapchainKHR          Swapchain;
-    VkSurfaceKHR            Surface;
     VkRenderPass            RenderPass;
     VkPipeline              Pipeline;           // The window pipeline may uses a different VkRenderPass than the one passed in ImGui_ImplVulkan_InitInfo
     uint32_t                FrameIndex;         // Current frame being rendered to (0 <= FrameIndex < FrameInFlightCount)
@@ -262,5 +266,9 @@ struct ImGui_ImplVulkanH_Window
         AttachmentDesc.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     }
 };
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 #endif // #ifndef IMGUI_DISABLE
