@@ -505,6 +505,24 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 
+bool vSyncSupported = false;
+
+void SendDebugMessage(){
+    // 补发消息
+    bool Windows10OrGreater = IsWindows10OrGreater();
+    if(Windows10OrGreater){
+        SendPipeLog(L"Windows 10+ detected, using ZBID_ABOVELOCK_UX.");
+    }else{
+        SendPipeLog(L"Not Windows 10+, will use ZBID_UIACCESS.");
+    }
+
+    if(vSyncSupported){
+        SendPipeLog(L"VSync is supported and enabled.");
+    }else{
+        SendPipeLog(L"VSync is not supported.");
+    }
+
+}
 
 void CreateSuperTopWindow()
 {
@@ -599,6 +617,21 @@ void CreateSuperTopWindow()
     HGLRC glrc = wglCreateContext(hdc);
     wglMakeCurrent(hdc, glrc);
 
+    // 尝试启用垂直同步
+    typedef BOOL (WINAPI *PFNWGLSWAPINTERVALEXTPROC)(int);
+    auto wglSwapIntervalEXT = (PFNWGLSWAPINTERVALEXTPROC)
+        wglGetProcAddress("wglSwapIntervalEXT");
+
+    if (wglSwapIntervalEXT)
+    {
+        wglSwapIntervalEXT(1);
+        vSyncSupported = true;
+    }
+    else
+    {
+        vSyncSupported = false;
+    }
+
     //imgui初始化
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -619,6 +652,12 @@ void CreateSuperTopWindow()
 
     //启动管道
     std::thread(ConnectToPipe).detach();
+
+    std::thread([](){
+        // 等待1秒，让管道连接和窗口初始化完成
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        SendDebugMessage();
+    }).detach();
 
     // 消息与渲染循环
     MSG msg{};
@@ -646,8 +685,6 @@ void CreateSuperTopWindow()
 
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(io.DisplaySize);
-
-
 
         ImGui::Begin(
             "##MainPanel",
@@ -710,6 +747,12 @@ void CreateSuperTopWindow()
             (int)io.DisplaySize.y
         );
 
+        // frame debug info (temp)
+        // float fps = ImGui::GetIO().Framerate;
+        // wchar_t buf[128];
+        // swprintf_s(buf, L"FPS: %.1f", fps);
+        // SendPipeLog(buf);
+
         glClearColor(0.08f, 0.08f, 0.08f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
@@ -729,6 +772,8 @@ void CreateSuperTopWindow()
     ShutdownGDIPlus();
     
 }
+
+
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
 {
