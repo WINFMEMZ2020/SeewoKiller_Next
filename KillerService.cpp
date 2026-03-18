@@ -22,6 +22,7 @@
 #include <sstream>
 #include <iomanip>
 #include <richedit.h>
+#include <wincrypt.h>
 
 
 #include <wtsapi32.h>   // for WTSQueryUserToken, WTSGetActiveConsoleSessionId
@@ -29,11 +30,21 @@
 
 #pragma comment(lib, "Wtsapi32.lib")
 #pragma comment(lib, "Userenv.lib")
+#pragma comment(lib, "Advapi32.lib")
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_SHOWLOG 1001
 #define ID_TRAY_EXIT 1002
+#define ID_TRAY_PASSWORD 1003
 #define WM_UPDATE_LOG (WM_USER + 100)
+
+#define ID_PASSWORD_OK 2001
+#define ID_PASSWORD_EDIT 2002
+// Change password window IDs
+#define ID_CHANGE_PWD_PWD_EDIT 3001
+#define ID_CHANGE_PWD_CONFIRM_EDIT 3002
+#define ID_CHANGE_PWD_BUTTON 3003
+
 
 std::atomic<bool> killSeewoStarted{false}; // 全局声明，放在所有函数前
 
@@ -44,6 +55,8 @@ size_t g_logShownIndex = 0;
 
 
 HWND g_hLogWnd = NULL; // 全局保存Log窗口句柄
+HWND g_hPasswordWnd = NULL; // 全局保存Password窗口句柄
+HWND g_hChangePwdWnd = NULL; // 全局保存Change Password窗口句柄
 
 void AppendLog(const std::wstring& line) {
     //Get now time
@@ -72,6 +85,7 @@ void AppendLog(const std::wstring& line) {
         PostMessageW(g_hLogWnd, WM_UPDATE_LOG, 0, 0);
     }
 }
+
 
 std::wstring GetAllLog() {
     std::lock_guard<std::mutex> lock(g_logMutex);
@@ -1084,6 +1098,477 @@ void ShowLogWindow(HINSTANCE hInst, HWND hParent) {
     UpdateWindow(g_hLogWnd);
 }
 
+// 将 UTF-16 转为 UTF-8
+static std::string Utf16ToUtf8(const std::wstring& w)
+{
+    if (w.empty()) return {};
+    int sz = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), NULL, 0, NULL, NULL);
+    if (sz <= 0) return {};
+    std::string out(sz, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &out[0], sz, NULL, NULL);
+    return out;
+}
+
+// 计算输入数据的 MD5（返回小写 32 字符十六进制）
+static std::string Md5HexLower(const std::string& input)
+{
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    BYTE rgbHash[16];
+    DWORD cbHash = sizeof(rgbHash);
+    std::string result;
+    if (!CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+        return result;
+    }
+    if (!CryptCreateHash(hProv, CALG_MD5, 0, 0, &hHash)) {
+        CryptReleaseContext(hProv, 0);
+        return result;
+    }
+    if (!input.empty()) {
+        if (!CryptHashData(hHash, (BYTE*)input.data(), (DWORD)input.size(), 0)) {
+            CryptDestroyHash(hHash);
+            CryptReleaseContext(hProv, 0);
+            return result;
+        }
+    }
+    if (CryptGetHashParam(hHash, HP_HASHVAL, rgbHash, &cbHash, 0)) {
+        static const char hex[] = "0123456789abcdef";
+        result.reserve(cbHash * 2);
+        for (DWORD i = 0; i < cbHash; ++i) {
+            result.push_back(hex[(rgbHash[i] >> 4) & 0xF]);
+            result.push_back(hex[rgbHash[i] & 0xF]);
+        }
+    }
+    CryptDestroyHash(hHash);
+    CryptReleaseContext(hProv, 0);
+    return result;
+}
+
+// 从注册表读取配置的 md5（优先检查活动用户的 HKEY_USERS\<SID>，然后回退到 HKEY_CURRENT_USER），找不到返回空串
+static std::wstring GetConfiguredMd5()
+{
+    DWORD activeSessionId = WTSGetActiveConsoleSessionId();
+    AppendLog(std::wstring(L"[Password] GetConfiguredMd5 ActiveSessionId=") + std::to_wstring(activeSessionId));
+    if (activeSessionId != 0xFFFFFFFF) {
+        HANDLE hUserToken = NULL;
+        if (WTSQueryUserToken(activeSessionId, &hUserToken)) {
+            DWORD bufSize = 0;
+            GetTokenInformation(hUserToken, TokenUser, NULL, 0, &bufSize);
+            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && bufSize > 0) {
+                std::vector<BYTE> buffer(bufSize);
+                if (GetTokenInformation(hUserToken, TokenUser, buffer.data(), bufSize, &bufSize)) {
+                    TOKEN_USER* ptu = (TOKEN_USER*)buffer.data();
+                    LPWSTR sidStr = NULL;
+                    if (ConvertSidToStringSidW(ptu->User.Sid, &sidStr)) {
+                        std::wstring sid(sidStr);
+                        LocalFree(sidStr);
+                        std::wstring regPath = sid + L"\\SOFTWARE\\SeewoKiller\\pwd_config";
+                        AppendLog(L"[Password] Checking registry path: HKEY_USERS\\" + regPath);
+                        HKEY hKey = NULL;
+                        LONG res = RegOpenKeyExW(HKEY_USERS, regPath.c_str(), 0, KEY_READ, &hKey);
+                        if (res == ERROR_SUCCESS) {
+                            DWORD type = 0;
+                            DWORD cb = 0;
+                            res = RegQueryValueExW(hKey, L"md5", NULL, &type, NULL, &cb);
+                            if (res == ERROR_SUCCESS && type == REG_SZ && cb > 0) {
+                                std::vector<wchar_t> buf(cb / sizeof(wchar_t) + 1);
+                                res = RegQueryValueExW(hKey, L"md5", NULL, &type, (LPBYTE)buf.data(), &cb);
+                                RegCloseKey(hKey);
+                                if (res == ERROR_SUCCESS) {
+                                    std::wstring val(buf.data());
+                                    AppendLog(L"[Password] Found md5 in HKEY_USERS: " + val);
+                                    CloseHandle(hUserToken);
+                                    return val;
+                                }
+                            } else {
+                                if (hKey) RegCloseKey(hKey);
+                                AppendLog(L"[Password] md5 not present in user hive.");
+                            }
+                        } else {
+                            AppendLog(L"[Password] RegOpenKeyExW failed for user hive. Error: " + std::to_wstring(res));
+                        }
+                    }
+                }
+            }
+            CloseHandle(hUserToken);
+        }
+    }
+
+    // fallback to HKEY_CURRENT_USER
+    AppendLog(L"[Password] Falling back to HKEY_CURRENT_USER check.");
+    HKEY hKey = NULL;
+    LONG res = RegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\SeewoKiller\\pwd_config", 0, KEY_READ, &hKey);
+    if (res != ERROR_SUCCESS) {
+        AppendLog(L"[Password] RegOpenKeyExW(HKEY_CURRENT_USER) failed. Error: " + std::to_wstring(res));
+        return L"";
+    }
+    DWORD type = 0;
+    DWORD cb = 0;
+    res = RegQueryValueExW(hKey, L"md5", NULL, &type, NULL, &cb);
+    if (res != ERROR_SUCCESS || type != REG_SZ || cb == 0) {
+        if (hKey) RegCloseKey(hKey);
+        AppendLog(L"[Password] md5 not present or invalid in HKEY_CURRENT_USER.");
+        return L"";
+    }
+    std::vector<wchar_t> buf(cb / sizeof(wchar_t) + 1);
+    res = RegQueryValueExW(hKey, L"md5", NULL, &type, (LPBYTE)buf.data(), &cb);
+    RegCloseKey(hKey);
+    if (res == ERROR_SUCCESS) {
+        std::wstring val(buf.data());
+        AppendLog(L"[Password] Found md5 in HKEY_CURRENT_USER: " + val);
+        return val;
+    }
+    return L"";
+}
+
+// 尝试将 md5 写入注册表（优先写入活动用户的 HKEY_USERS\<SID>，回退到 HKEY_CURRENT_USER）
+bool SetConfiguredMd5(const std::wstring& md5)
+{
+    AppendLog(L"[Password] SetConfiguredMd5 invoked.");
+    DWORD activeSessionId = WTSGetActiveConsoleSessionId();
+    if (activeSessionId != 0xFFFFFFFF) {
+        HANDLE hUserToken = NULL;
+        if (WTSQueryUserToken(activeSessionId, &hUserToken)) {
+            DWORD bufSize = 0;
+            GetTokenInformation(hUserToken, TokenUser, NULL, 0, &bufSize);
+            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && bufSize > 0) {
+                std::vector<BYTE> buffer(bufSize);
+                if (GetTokenInformation(hUserToken, TokenUser, buffer.data(), bufSize, &bufSize)) {
+                    TOKEN_USER* ptu = (TOKEN_USER*)buffer.data();
+                    LPWSTR sidStr = NULL;
+                    if (ConvertSidToStringSidW(ptu->User.Sid, &sidStr)) {
+                        std::wstring sid(sidStr);
+                        LocalFree(sidStr);
+                        std::wstring regPath = sid + L"\\SOFTWARE\\SeewoKiller\\pwd_config";
+                        AppendLog(L"[Password] Attempting to write to HKEY_USERS\\" + regPath);
+                        HKEY hKey = NULL;
+                        DWORD disp = 0;
+                        LONG res = RegCreateKeyExW(HKEY_USERS, regPath.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, &disp);
+                        if (res == ERROR_SUCCESS) {
+                            if (md5.empty()) {
+                                // delete value
+                                LONG del = RegDeleteValueW(hKey, L"md5");
+                                RegCloseKey(hKey);
+                                if (del == ERROR_SUCCESS || del == ERROR_FILE_NOT_FOUND) {
+                                    AppendLog(L"[Password] Deleted md5 value from HKEY_USERS (or it did not exist)." );
+                                    CloseHandle(hUserToken);
+                                    return true;
+                                } else {
+                                    AppendLog(L"[Password] RegDeleteValueW failed for HKEY_USERS. Error: " + std::to_wstring(del));
+                                }
+                            } else {
+                                std::wstring md5w = md5;
+                                LONG r2 = RegSetValueExW(hKey, L"md5", 0, REG_SZ, (const BYTE*)md5w.c_str(), (DWORD)((md5w.size()+1)*sizeof(wchar_t)));
+                                RegCloseKey(hKey);
+                                if (r2 == ERROR_SUCCESS) {
+                                    AppendLog(L"[Password] Successfully wrote md5 to HKEY_USERS.");
+                                    CloseHandle(hUserToken);
+                                    return true;
+                                } else {
+                                    AppendLog(L"[Password] RegSetValueExW failed for HKEY_USERS. Error: " + std::to_wstring(r2));
+                                }
+                            }
+                        } else {
+                            AppendLog(L"[Password] RegCreateKeyExW failed for HKEY_USERS. Error: " + std::to_wstring(res));
+                        }
+                    }
+                }
+            }
+            CloseHandle(hUserToken);
+        } else {
+            AppendLog(L"[Password] WTSQueryUserToken failed while setting md5. Error: " + std::to_wstring(GetLastError()));
+        }
+    }
+
+    // fallback to HKEY_CURRENT_USER
+    AppendLog(L"[Password] Falling back to write HKEY_CURRENT_USER.");
+    HKEY hKey = NULL;
+    DWORD disp = 0;
+    LONG res2 = RegCreateKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\SeewoKiller\\pwd_config", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, &disp);
+    if (res2 != ERROR_SUCCESS) {
+        AppendLog(L"[Password] RegCreateKeyExW(HKEY_CURRENT_USER) failed. Error: " + std::to_wstring(res2));
+        return false;
+    }
+    if (md5.empty()) {
+        LONG del = RegDeleteValueW(hKey, L"md5");
+        RegCloseKey(hKey);
+        if (del == ERROR_SUCCESS || del == ERROR_FILE_NOT_FOUND) {
+            AppendLog(L"[Password] Deleted md5 value from HKEY_CURRENT_USER (or it did not exist)." );
+            return true;
+        } else {
+            AppendLog(L"[Password] RegDeleteValueW failed for HKEY_CURRENT_USER. Error: " + std::to_wstring(del));
+            return false;
+        }
+    } else {
+        std::wstring md5w = md5;
+        LONG r3 = RegSetValueExW(hKey, L"md5", 0, REG_SZ, (const BYTE*)md5w.c_str(), (DWORD)((md5w.size()+1)*sizeof(wchar_t)));
+        RegCloseKey(hKey);
+        if (r3 == ERROR_SUCCESS) {
+            AppendLog(L"[Password] Successfully wrote md5 to HKEY_CURRENT_USER.");
+            return true;
+        } else {
+            AppendLog(L"[Password] RegSetValueExW failed for HKEY_CURRENT_USER. Error: " + std::to_wstring(r3));
+            return false;
+        }
+    }
+}
+
+    void ShowChangePasswordWindow(HINSTANCE hInst, HWND hParent);
+
+LRESULT CALLBACK PasswordWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    static HWND hLabel = NULL;
+    static HWND hEdit = NULL;
+    static HWND hButton = NULL;
+
+    switch (msg) {
+    case WM_CREATE:
+    {
+        hLabel = CreateWindowExW(0, L"STATIC", L"Enter Password:",
+            WS_CHILD | WS_VISIBLE,
+            10, 10, 110, 24,
+            hwnd, NULL, GetModuleHandleW(NULL), NULL);
+
+        hEdit = CreateWindowExW(0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_PASSWORD,
+            130, 10, 200, 24,
+            hwnd, (HMENU)ID_PASSWORD_EDIT, GetModuleHandleW(NULL), NULL);
+
+        hButton = CreateWindowExW(0, L"BUTTON", L"OK",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            10, 44, 80, 26,
+            hwnd, (HMENU)ID_PASSWORD_OK, GetModuleHandleW(NULL), NULL);
+
+        // 设置默认字体
+        HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        SendMessageW(hLabel, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(hButton, WM_SETFONT, (WPARAM)hFont, TRUE);
+        break;
+    }
+    case WM_SIZE:
+    {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int w = rc.right - rc.left;
+        // label fixed width 110, spacing, edit fills rest
+        MoveWindow(hLabel, 10, 10, 110, 24, TRUE);
+        MoveWindow(hEdit, 130, 10, ((w - 150) > 80 ? (w - 150) : 80), 24, TRUE);
+        MoveWindow(hButton, (w - 80) / 2, 44, 80, 26, TRUE);
+        break;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wParam) == ID_PASSWORD_OK) {
+            // 读取输入密码
+            wchar_t wbuf[512] = {0};
+            if (hEdit) GetWindowTextW(hEdit, wbuf, (int)_countof(wbuf));
+            std::wstring pwd(wbuf);
+            AppendLog(L"[Password] OK clicked. Input length: " + std::to_wstring(pwd.size()));
+
+            // 计算 md5（对 UTF-8 编码内容计算）
+            std::string utf8 = Utf16ToUtf8(pwd);
+            std::string md5 = Md5HexLower(utf8);
+            std::wstring md5w(md5.begin(), md5.end());
+            AppendLog(L"[Password] Computed md5: " + md5w);
+
+            // 获取配置的 md5
+            std::wstring cfg = GetConfiguredMd5();
+            std::string cfg_n = Utf16ToUtf8(cfg);
+            AppendLog(L"[Password] Config md5 (raw): " + cfg);
+
+            bool ok = false;
+            if (!cfg_n.empty()) {
+                ok = (md5 == cfg_n);
+            } else {
+                AppendLog(L"[Password] No configured md5 to compare.");
+            }
+
+            if (ok) {
+                AppendLog(L"[Password] Password match: TRUE. Showing change password window.");
+                // 打开修改密码窗口：不要使用验证窗口作为父窗口（父窗口随后会被销毁），使用 NULL 作为顶层窗口
+                ShowChangePasswordWindow((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+            } else {
+                AppendLog(L"[Password] Password match: FALSE");
+                MessageBoxW(hwnd, L"Password incorrect", L"Password", MB_OK | MB_ICONERROR);
+            }
+
+            // 关闭当前验证窗口
+            ShowWindow(hwnd, SW_HIDE);
+            g_hPasswordWnd = NULL;
+            DestroyWindow(hwnd);
+        }
+        break;
+    case WM_CLOSE:
+        ShowWindow(hwnd, SW_HIDE);
+        g_hPasswordWnd = NULL;
+        DestroyWindow(hwnd);
+        break;
+    case WM_DESTROY:
+        g_hPasswordWnd = NULL;
+        break;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    return 0;
+}
+
+void ShowPasswordWindow(HINSTANCE hInst, HWND hParent) {
+    if (g_hPasswordWnd && IsWindow(g_hPasswordWnd)) {
+        ShowWindow(g_hPasswordWnd, SW_SHOWNORMAL);
+        SetForegroundWindow(g_hPasswordWnd);
+        return;
+    }
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = PasswordWndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"SeewoKillerPasswordWnd";
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
+    RegisterClassW(&wc);
+    g_hPasswordWnd = CreateWindowW(L"SeewoKillerPasswordWnd", L"Password",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 360, 120, hParent, NULL, hInst, NULL);
+    ShowWindow(g_hPasswordWnd, SW_SHOWNORMAL);
+    UpdateWindow(g_hPasswordWnd);
+}
+
+LRESULT CALLBACK ChangePwdWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    static HWND hLabel1 = NULL;
+    static HWND hEdit1 = NULL;
+    static HWND hLabel2 = NULL;
+    static HWND hEdit2 = NULL;
+    static HWND hButton = NULL;
+
+    switch (msg) {
+    case WM_CREATE:
+    {
+        hLabel1 = CreateWindowExW(0, L"STATIC", L"Password:",
+            WS_CHILD | WS_VISIBLE,
+            10, 10, 80, 24,
+            hwnd, NULL, GetModuleHandleW(NULL), NULL);
+
+        hEdit1 = CreateWindowExW(0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_PASSWORD,
+            100, 10, 220, 24,
+            hwnd, (HMENU)ID_CHANGE_PWD_PWD_EDIT, GetModuleHandleW(NULL), NULL);
+
+        hLabel2 = CreateWindowExW(0, L"STATIC", L"Confirm:",
+            WS_CHILD | WS_VISIBLE,
+            10, 44, 80, 24,
+            hwnd, NULL, GetModuleHandleW(NULL), NULL);
+
+        hEdit2 = CreateWindowExW(0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_PASSWORD,
+            100, 44, 220, 24,
+            hwnd, (HMENU)ID_CHANGE_PWD_CONFIRM_EDIT, GetModuleHandleW(NULL), NULL);
+
+        hButton = CreateWindowExW(0, L"BUTTON", L"Change Password",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            120, 80, 120, 28,
+            hwnd, (HMENU)ID_CHANGE_PWD_BUTTON, GetModuleHandleW(NULL), NULL);
+
+        HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        SendMessageW(hLabel1, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(hEdit1, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(hLabel2, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(hEdit2, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(hButton, WM_SETFONT, (WPARAM)hFont, TRUE);
+        break;
+    }
+    case WM_SIZE:
+    {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int w = rc.right - rc.left;
+        MoveWindow(hLabel1, 10, 10, 80, 24, TRUE);
+        MoveWindow(hEdit1, 100, 10, w - 120, 24, TRUE);
+        MoveWindow(hLabel2, 10, 44, 80, 24, TRUE);
+        MoveWindow(hEdit2, 100, 44, w - 120, 24, TRUE);
+        MoveWindow(hButton, (w - 120) / 2, 80, 120, 28, TRUE);
+        break;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wParam) == ID_CHANGE_PWD_BUTTON) {
+            wchar_t p1[256] = {0};
+            wchar_t p2[256] = {0};
+            if (hEdit1) GetWindowTextW(hEdit1, p1, (int)_countof(p1));
+            if (hEdit2) GetWindowTextW(hEdit2, p2, (int)_countof(p2));
+            std::wstring ws1(p1), ws2(p2);
+            if (ws1 == ws2) {
+                AppendLog(L"[ChangePwd] New passwords match. Persisting md5 to registry...");
+                bool wrote = false;
+                if (ws1.empty()) {
+                    // empty means clear password
+                    AppendLog(L"[ChangePwd] New password is empty: clearing configured password.");
+                    wrote = SetConfiguredMd5(L"");
+                } else {
+                    // 计算 md5 并写入注册表
+                    std::string utf8 = Utf16ToUtf8(ws1);
+                    std::string md5 = Md5HexLower(utf8);
+                    std::wstring md5w(md5.begin(), md5.end());
+                    wrote = SetConfiguredMd5(md5w);
+                }
+                if (wrote) {
+                    AppendLog(L"[ChangePwd] md5 persisted successfully.");
+                    MessageBoxW(hwnd, L"Password changed successfully", L"Change Password", MB_OK | MB_ICONINFORMATION);
+                    ShowWindow(hwnd, SW_HIDE);
+                    g_hChangePwdWnd = NULL;
+                    DestroyWindow(hwnd);
+                } else {
+                    AppendLog(L"[ChangePwd] Failed to persist md5.");
+                    MessageBoxW(hwnd, L"Failed to persist new password", L"Change Password", MB_OK | MB_ICONERROR);
+                }
+            } else {
+                AppendLog(L"[ChangePwd] New passwords do not match or empty.");
+                MessageBoxW(hwnd, L"Passwords do not match or empty", L"Change Password", MB_OK | MB_ICONERROR);
+            }
+        }
+        break;
+    case WM_CLOSE:
+        ShowWindow(hwnd, SW_HIDE);
+        g_hChangePwdWnd = NULL;
+        DestroyWindow(hwnd);
+        break;
+    case WM_DESTROY:
+        g_hChangePwdWnd = NULL;
+        break;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    return 0;
+}
+
+void ShowChangePasswordWindow(HINSTANCE hInst, HWND hParent) {
+    if (g_hChangePwdWnd && IsWindow(g_hChangePwdWnd)) {
+        ShowWindow(g_hChangePwdWnd, SW_SHOWNORMAL);
+        SetForegroundWindow(g_hChangePwdWnd);
+        return;
+    }
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = ChangePwdWndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"SeewoKillerChangePwdWnd";
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
+    RegisterClassW(&wc);
+    g_hChangePwdWnd = CreateWindowW(L"SeewoKillerChangePwdWnd", L"Change Password",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 420, 160, hParent, NULL, hInst, NULL);
+    ShowWindow(g_hChangePwdWnd, SW_SHOWNORMAL);
+    UpdateWindow(g_hChangePwdWnd);
+}
+
+// 检查注册表中是否配置了密码（HKEY_CURRENT_USER\SOFTWARE\SeewoKiller\pwd_config, 值名: md5）
+bool IsPasswordConfigured()
+{
+    // Treat configured md5 as present only when GetConfiguredMd5() returns a non-empty string
+    std::wstring cfg = GetConfiguredMd5();
+    bool present = !cfg.empty();
+    AppendLog(std::wstring(L"[Password] IsPasswordConfigured -> ") + (present ? L"true" : L"false"));
+    return present;
+}
+
 // 托盘图标相关
 NOTIFYICONDATAW g_nid = {0};
 HMENU g_hTrayMenu = NULL;
@@ -1106,6 +1591,7 @@ void RemoveTrayIcon() {
 void ShowTrayMenu(HWND hwnd) {
     if (!g_hTrayMenu) {
         g_hTrayMenu = CreatePopupMenu();
+        AppendMenuW(g_hTrayMenu, MF_STRING, ID_TRAY_PASSWORD, L"Password");
         AppendMenuW(g_hTrayMenu, MF_STRING, ID_TRAY_SHOWLOG, L"ShowLog");
         AppendMenuW(g_hTrayMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
     }
@@ -1127,6 +1613,17 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_COMMAND:
         if (LOWORD(wParam) == ID_TRAY_SHOWLOG) {
             ShowLogWindow((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), hwnd);
+        } else if (LOWORD(wParam) == ID_TRAY_PASSWORD) {
+            AppendLog(L"[Password] Tray menu clicked. Checking configuration...");
+            bool cfg = IsPasswordConfigured();
+            if (cfg) {
+                AppendLog(L"[Password] Configuration present. Showing password window.");
+                ShowPasswordWindow((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), hwnd);
+            } else {
+                AppendLog(L"[Password] No configuration found. Opening change-password window to allow setting a password.");
+                // No existing password: open change-password window so user can set one
+                ShowChangePasswordWindow((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+            }
         } else if (LOWORD(wParam) == ID_TRAY_EXIT) {
             //使用当前活动用户权限重启explorer.exe
             RestartExplorerAsActiveUser();

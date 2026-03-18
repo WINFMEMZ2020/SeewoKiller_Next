@@ -23,6 +23,8 @@
 
 #include <gl/GL.h>
 
+
+
 LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd,
     UINT msg,
@@ -239,6 +241,218 @@ void DrawPngIcon(HWND hwnd, HDC hdc)
     }
 }
 
+// 前向声明
+bool ShowPasswordWindowModal();
+
+// 密码窗口过程
+LRESULT CALLBACK PasswordWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    std::atomic<int>* pResult = (std::atomic<int>*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    switch (msg) {
+    case WM_CREATE:
+    {
+        CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
+        pResult = (std::atomic<int>*)cs->lpCreateParams;
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)pResult);
+
+        // 使用现代 Windows UI 字体：Segoe UI
+        HFONT hFont = CreateFontW(
+            20, 0, 0, 0,
+            FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            L"Segoe UI"
+        );
+
+        // 创建标题和说明文本
+        HWND hTitle = CreateWindowEx(0, L"STATIC", L"Password Required.",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            30, 10, 420, 25,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+        SendMessage(hTitle, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        HWND hText1 = CreateWindowEx(0, L"STATIC", L"Make sure this is you.",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            30, 45, 420, 25,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+        SendMessage(hText1, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        HWND hText2 = CreateWindowEx(0, L"STATIC", L"Since a password is enabled, you will need to verify",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            30, 70, 420, 25,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+        SendMessage(hText2, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        HWND hText3 = CreateWindowEx(0, L"STATIC", L"your identity before proceeding further.",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            30, 95, 420, 25,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+        SendMessage(hText3, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        HWND hText4 = CreateWindowEx(0, L"STATIC", L"I use Arch btw.",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            30, 220, 420, 25,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+        SendMessage(hText4, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // 密码输入框
+        HWND hEdit = CreateWindowEx(0, L"EDIT", NULL,
+            WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP,
+            30, 130, 420, 28,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+        SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // 保存 Edit 控件句柄，供后续使用
+        SetPropW(hwnd, L"PasswordEdit", (HANDLE)hEdit);
+
+        // 注册 Edit 子类：按 Enter 会触发父窗口的 OK 按钮处理
+        WNDPROC origProc = (WNDPROC)SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)EditSubclassProc);
+        SetPropW(hEdit, L"OrigEditProc", (HANDLE)origProc);
+
+        // 将输入焦点设置到编辑控件
+        SetFocus(hEdit);
+        SetActiveWindow(hwnd);
+        SetForegroundWindow(hwnd);
+
+        // 按钮
+        HWND hButton = CreateWindow(L"BUTTON", L"OK",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            200, 180, 100, 32,
+            hwnd, (HMENU)1, GetModuleHandle(NULL), NULL);
+        SendMessage(hButton, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        return 0;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wParam) == 1 && HIWORD(wParam) == BN_CLICKED) {
+            HWND hEdit = (HWND)GetPropW(hwnd, L"PasswordEdit");
+            wchar_t pw[64] = {0};
+            if (hEdit) GetWindowText(hEdit, pw, 63);
+
+            // 计算输入内容的MD5
+            char inputUtf8[64] = {0};
+            WideCharToMultiByte(CP_UTF8, 0, pw, -1, inputUtf8, 64, NULL, NULL);
+            BYTE md5[16] = {0};
+            DWORD cbHash = 16;
+            HCRYPTPROV hProv = 0;
+            HCRYPTHASH hHash = 0;
+            if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+                if (CryptCreateHash(hProv, CALG_MD5, 0, 0, &hHash)) {
+                    CryptHashData(hHash, (BYTE*)inputUtf8, (DWORD)strlen(inputUtf8), 0);
+                    CryptGetHashParam(hHash, HP_HASHVAL, md5, &cbHash, 0);
+                    CryptDestroyHash(hHash);
+                }
+                CryptReleaseContext(hProv, 0);
+            }
+            // 转换为32位小写字符串
+            char md5str[33] = {0};
+            for (int i = 0; i < 16; ++i) {
+                sprintf(md5str + i * 2, "%02x", md5[i]);
+            }
+            wchar_t md5w[64] = {0};
+            MultiByteToWideChar(CP_UTF8, 0, md5str, -1, md5w, 64);
+
+            if (wcscmp(md5w, g_password_md5) == 0) {
+                std::atomic<int>* res = (std::atomic<int>*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+                if (res) res->store(1);
+                SendPipeCommand(L"WindowsVerified");
+                DestroyWindow(hwnd);
+            } else {
+                MessageBoxW(hwnd, L"Wrong password.", L"", MB_OK | MB_ICONERROR);
+                if (hEdit) SetWindowText(hEdit, L""); // 清空输入框
+                if (hEdit) SetFocus(hEdit);
+                SetActiveWindow(hwnd);
+                SetForegroundWindow(hwnd);
+            }
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+    {
+        std::atomic<int>* res = (std::atomic<int>*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+        if (res) res->store(0);
+        passwordWindowHWND = NULL;
+        DestroyWindow(hwnd);
+        return 0;
+    }
+
+    case WM_DESTROY:
+    {
+        HWND hEdit = (HWND)GetPropW(hwnd, L"PasswordEdit");
+        if (hEdit) RemovePropW(hwnd, L"PasswordEdit");
+        return 0;
+    }
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+// 创建并以模态方式运行密码窗口，返回是否验证成功
+bool ShowPasswordWindowModal()
+{
+    if ((passwordWindowHWND != NULL) && IsWindow(passwordWindowHWND)) {
+        SetForegroundWindow(passwordWindowHWND);
+        SetActiveWindow(passwordWindowHWND);
+        return false;
+    }
+
+    static bool pwClassRegistered = false;
+    if (!pwClassRegistered) {
+        WNDCLASS pwc = {};
+        pwc.style = CS_HREDRAW | CS_VREDRAW;
+        pwc.lpfnWndProc = PasswordWindowProc;
+        pwc.hInstance = GetModuleHandle(NULL);
+        pwc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        pwc.lpszClassName = L"PasswordWindowClass";
+        RegisterClass(&pwc);
+        pwClassRegistered = true;
+    }
+
+    std::atomic<int>* result = new std::atomic<int>(0);
+
+    int pwWidth = 600;
+    int pwHeight = 300;
+    int pwX = (screenWidth - pwWidth) / 2;
+    int pwY = (screenHeight - pwHeight) / 2;
+
+    HWND pwWnd = CreateWindowInBand(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        L"PasswordWindowClass",
+        L"Verify your identity.",
+        WS_CAPTION | WS_BORDER | WS_SYSMENU,
+        pwX, pwY, pwWidth, pwHeight,
+        NULL, NULL, GetModuleHandle(NULL), (LPVOID)result,
+        IsWindows10OrGreater() ? ZBID_ABOVELOCK_UX : ZBID_UIACCESS
+    );
+
+    if (!pwWnd) {
+        delete result;
+        return false;
+    }
+
+    passwordWindowHWND = pwWnd;
+    ShowWindow(pwWnd, SW_SHOW);
+    UpdateWindow(pwWnd);
+
+    // 模态消息循环，直到窗口销毁
+    MSG msg{};
+    while (IsWindow(pwWnd)) {
+        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        Sleep(10);
+    }
+
+    bool verified = (result->load() == 1);
+    delete result;
+    return verified;
+}
+
 LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     switch (uMsg)
@@ -267,195 +481,76 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
     case WM_LBUTTONDOWN:
     {
         if (!isMenuVisible) {
-            // 检查password文件是否存在
-            WCHAR path[MAX_PATH] = {0};
-            HMODULE hModule = NULL;
-            GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)DrawPngIcon, &hModule);
-            GetModuleFileNameW(hModule, path, MAX_PATH);
-            WCHAR* lastSlash = wcsrchr(path, L'\\');
-            if (lastSlash) *(lastSlash + 1) = 0;
-            wcscat_s(path, MAX_PATH, L"password");
-            DWORD attr = GetFileAttributesW(path);
-            if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-                // 存在password文件，读取内容并弹窗显示MD5
-                if((passwordWindowHWND != NULL) && IsWindow(passwordWindowHWND)) {
+            // 检查注册表中是否存在密码（先在 HKCU\SOFTWARE\SeewoKiller 下查找 md5，若未找到再在子键 pwd_config 下查找）
+            SendPipeLog(L"Checking registry for password (HKCU\\SOFTWARE\\SeewoKiller)...");
+            bool passwordExists = false;
+            // 尝试在主键下读取 md5
+            HKEY hKey = NULL;
+            auto tryReadMd5FromKey = [&](HKEY key)->bool {
+                DWORD type = 0;
+                DWORD dataSize = 0;
+                LONG qres = RegQueryValueExW(key, L"md5", NULL, &type, NULL, &dataSize);
+                if (qres == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && dataSize > 0) {
+                    wchar_t* buf = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, dataSize + sizeof(wchar_t));
+                    if (buf) {
+                        if (RegQueryValueExW(key, L"md5", NULL, &type, (LPBYTE)buf, &dataSize) == ERROR_SUCCESS) {
+                            // Ensure null-termination
+                            buf[(dataSize / sizeof(wchar_t)) - 1] = L'\0';
+                            // Treat empty string as not present
+                            if (wcslen(buf) == 0) {
+                                HeapFree(GetProcessHeap(), 0, buf);
+                                return false;
+                            }
+                            wcscpy_s(g_password_md5, 64, buf);
+                            HeapFree(GetProcessHeap(), 0, buf);
+                            return true;
+                        }
+                        HeapFree(GetProcessHeap(), 0, buf);
+                    }
+                }
+                return false;
+            };
+
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\SeewoKiller", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+                if (tryReadMd5FromKey(hKey)) {
+                    passwordExists = true;
+                    SendPipeLog(L"Found md5 under HKCU\\SOFTWARE\\SeewoKiller");
+                }
+                RegCloseKey(hKey);
+            }
+
+            // 如果主键下未找到，尝试子键 pwd_config
+            if (!passwordExists) {
+                if (RegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\SeewoKiller\\pwd_config", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+                    if (tryReadMd5FromKey(hKey)) {
+                        passwordExists = true;
+                        SendPipeLog(L"Found md5 under HKCU\\SOFTWARE\\SeewoKiller\\pwd_config");
+                    }
+                    RegCloseKey(hKey);
+                }
+            }
+
+            if (passwordExists) {
+                // 注册表存在 md5，弹出验证窗口（解耦为独立函数）
+                SendPipeLog(L"Password md5 loaded from registry.");
+                if ((passwordWindowHWND != NULL) && IsWindow(passwordWindowHWND)) {
                     SetForegroundWindow(passwordWindowHWND);
                     SetActiveWindow(passwordWindowHWND);
                     return 0;
                 }
-                HANDLE hFile = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-                if (hFile != INVALID_HANDLE_VALUE) {
-                    char buf[64] = {0};
-                    DWORD bytesRead = 0;
-                    ReadFile(hFile, buf, 32, &bytesRead, NULL);
-                    CloseHandle(hFile);
-                    // 转换为宽字节
-                    MultiByteToWideChar(CP_UTF8, 0, buf, -1, g_password_md5, 64);
-                    //MessageBoxW(hwnd, g_password_md5, L"Password MD5", MB_OK);
+
+                // 调用模态密码窗口函数，返回是否验证成功
+                bool verified = false;
+                extern bool ShowPasswordWindowModal();
+                verified = ShowPasswordWindowModal();
+                if (verified) {
+                    ToggleMenuVisibility();
                 }
-                // 注册密码窗口类
-
-
-
-                static bool pwClassRegistered = false;
-                if (!pwClassRegistered) {
-                    WNDCLASS pwc = {0};
-                    pwc.style = CS_HREDRAW | CS_VREDRAW;
-                    pwc.lpfnWndProc = [](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) -> LRESULT {
-                        static HWND hEdit = NULL;
-                        switch (msg) {
-                        case WM_CREATE:
-                        {
-                            // BY ChatGPT 
-                            // 使用现代 Windows UI 字体：Segoe UI
-                            HFONT hFont = CreateFontW(
-                                20, 0, 0, 0,
-                                FW_NORMAL, FALSE, FALSE, FALSE,
-                                DEFAULT_CHARSET,
-                                OUT_DEFAULT_PRECIS,
-                                CLIP_DEFAULT_PRECIS,
-                                CLEARTYPE_QUALITY,   // 抗锯齿
-                                DEFAULT_PITCH | FF_DONTCARE,
-                                L"Segoe UI"
-                            );
-
-                            // 创建标题
-                            HWND hTitle = CreateWindowEx(0, L"STATIC", L"Password Required.",
-                                WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                30, 10, 420, 25,
-                                hwnd, NULL, GetModuleHandle(NULL), NULL);
-                            SendMessage(hTitle, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-                            // 静态文本控件（无边框更美观）
-                            HWND hText1 = CreateWindowEx(0, L"STATIC", L"Make sure this is you.",
-                                WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                30, 45, 420, 25,
-                                hwnd, NULL, GetModuleHandle(NULL), NULL);
-                            SendMessage(hText1, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-                            HWND hText2 = CreateWindowEx(0, L"STATIC", L"Since a password is enabled, you will need to verify",
-                                WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                30, 70, 420, 25,
-                                hwnd, NULL, GetModuleHandle(NULL), NULL);
-                            SendMessage(hText2, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-                            HWND hText3 = CreateWindowEx(0, L"STATIC", L"your identity before proceeding further.",
-                                WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                30, 95, 420, 25,
-                                hwnd, NULL, GetModuleHandle(NULL), NULL);
-                            SendMessage(hText3, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-                            HWND hText4 = CreateWindowEx(0, L"STATIC", L"I use Arch btw.",
-                                WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                30, 220, 420, 25,
-                                hwnd, NULL, GetModuleHandle(NULL), NULL);
-                            SendMessage(hText4, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-                            // 密码输入框
-                            hEdit = CreateWindowEx(0, L"EDIT", NULL,
-                                WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP,
-                                30, 130, 420, 28,
-                                hwnd, NULL, GetModuleHandle(NULL), NULL);
-                            SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-                            // 注册 Edit 子类：按 Enter 会触发父窗口的 OK 按钮处理
-                            // 使用 SetWindowLongPtr + SetProp 保存原始 WndProc（避免对 comctl32 的链接依赖）
-                            WNDPROC origProc = (WNDPROC)SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)EditSubclassProc);
-                            SetPropW(hEdit, L"OrigEditProc", (HANDLE)origProc);
-
-                            // 将输入焦点设置到编辑控件
-                            // 为了兼容性那就几种方法都试一次吧w
-                            SetFocus(hEdit);
-                            SetActiveWindow(hwnd);
-                            SetForegroundWindow(hwnd);
-
-                            // 按钮
-                            HWND hButton = CreateWindow(L"BUTTON", L"OK",
-                                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                200, 180, 100, 32,
-                                hwnd, (HMENU)1, GetModuleHandle(NULL), NULL);
-                            SendMessage(hButton, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-                            return 0;
-                        }
-
-                        case WM_COMMAND:
-                            if (LOWORD(wParam) == 1 && HIWORD(wParam) == BN_CLICKED) {
-                                wchar_t pw[64] = {0};
-                                GetWindowText(hEdit, pw, 63);
-                                // 计算输入内容的MD5
-                                char inputUtf8[64] = {0};
-                                WideCharToMultiByte(CP_UTF8, 0, pw, -1, inputUtf8, 64, NULL, NULL);
-                                BYTE md5[16] = {0};
-                                DWORD cbHash = 16;
-                                HCRYPTPROV hProv = 0;
-                                HCRYPTHASH hHash = 0;
-                                if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
-                                    if (CryptCreateHash(hProv, CALG_MD5, 0, 0, &hHash)) {
-                                        CryptHashData(hHash, (BYTE*)inputUtf8, (DWORD)strlen(inputUtf8), 0);
-                                        CryptGetHashParam(hHash, HP_HASHVAL, md5, &cbHash, 0);
-                                        CryptDestroyHash(hHash);
-                                    }
-                                    CryptReleaseContext(hProv, 0);
-                                }
-                                // 转换为32位小写字符串
-                                char md5str[33] = {0};
-                                for (int i = 0; i < 16; ++i) {
-                                    sprintf(md5str + i * 2, "%02x", md5[i]);
-                                }
-                                wchar_t md5w[64] = {0};
-                                MultiByteToWideChar(CP_UTF8, 0, md5str, -1, md5w, 64);
-                                if (wcscmp(md5w, g_password_md5) == 0) {
-                                    //MessageBoxW(hwnd, L"true", L"验证结果", MB_OK);
-                                    ToggleMenuVisibility();
-                                    passwordWindowHWND = NULL;
-                                    SendPipeCommand(L"WindowsVerified");
-                                    DestroyWindow(hwnd);
-                                }else{
-                                    MessageBoxW(hwnd, L"Wrong password.", L"", MB_OK | MB_ICONERROR);
-                                    SetWindowText(hEdit, L""); // 清空输入框
-                                    // 重新设置焦点
-                                    SetFocus(hEdit);
-                                    SetActiveWindow(hwnd);
-                                    SetForegroundWindow(hwnd);
-                                }
-                                // 虽然不太清楚，反正加个retuen 0又不吃亏w
-                                return 0;
-                            }
-                            break;
-                        case WM_CLOSE:
-                            passwordWindowHWND = NULL;
-                            DestroyWindow(hwnd);
-                            return 0;
-                        case WM_DESTROY:
-                            return 0;
-                        }
-                        return DefWindowProc(hwnd, msg, wParam, lParam);
-                    };
-                    pwc.hInstance = GetModuleHandle(NULL);
-                    pwc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-                    pwc.lpszClassName = L"PasswordWindowClass";
-                    RegisterClass(&pwc);
-                    pwClassRegistered = true;
-                }
-                int pwWidth = 600;
-                int pwHeight = 300;
-                int pwX = (screenWidth - pwWidth) / 2;
-                int pwY = (screenHeight - pwHeight) / 2;
-                HWND pwWnd = CreateWindowInBand(
-                    WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                    L"PasswordWindowClass",
-                    L"Verify your identity.",
-                    WS_CAPTION | WS_BORDER | WS_SYSMENU | WS_VISIBLE,
-                    pwX, pwY, pwWidth, pwHeight,
-                    NULL, NULL, GetModuleHandle(NULL), NULL,
-                    ZBID_UIACCESS
-                );
-                passwordWindowHWND = pwWnd;
-
-                ShowWindow(pwWnd, SW_SHOW);
-                UpdateWindow(pwWnd);
                 return 0;
+            }
+            else {
+                // ensure cleared
+                g_password_md5[0] = L'\0';
             }
         }
         // 不存在password文件或菜单已展开，直接切换菜单可见性
