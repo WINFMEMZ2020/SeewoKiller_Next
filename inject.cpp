@@ -514,7 +514,7 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
             if (RegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\SeewoKiller", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
                 if (tryReadMd5FromKey(hKey)) {
                     passwordExists = true;
-                    SendPipeLog(L"Found md5 under HKCU\\SOFTWARE\\SeewoKiller");
+                    SendPipeLog(L"Found password configuration.");
                 }
                 RegCloseKey(hKey);
             }
@@ -524,7 +524,7 @@ LRESULT CALLBACK ButtonWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
                 if (RegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\SeewoKiller\\pwd_config", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
                     if (tryReadMd5FromKey(hKey)) {
                         passwordExists = true;
-                        SendPipeLog(L"Found md5 under HKCU\\SOFTWARE\\SeewoKiller\\pwd_config");
+                        SendPipeLog(L"Found password configuration.");
                     }
                     RegCloseKey(hKey);
                 }

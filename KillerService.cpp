@@ -1163,7 +1163,7 @@ static std::wstring GetConfiguredMd5()
                         std::wstring sid(sidStr);
                         LocalFree(sidStr);
                         std::wstring regPath = sid + L"\\SOFTWARE\\SeewoKiller\\pwd_config";
-                        AppendLog(L"[Password] Checking registry path: HKEY_USERS\\" + regPath);
+                        AppendLog(L"[Password] Checking registry path.");
                         HKEY hKey = NULL;
                         LONG res = RegOpenKeyExW(HKEY_USERS, regPath.c_str(), 0, KEY_READ, &hKey);
                         if (res == ERROR_SUCCESS) {
@@ -1176,13 +1176,13 @@ static std::wstring GetConfiguredMd5()
                                 RegCloseKey(hKey);
                                 if (res == ERROR_SUCCESS) {
                                     std::wstring val(buf.data());
-                                    AppendLog(L"[Password] Found md5 in HKEY_USERS: " + val);
+                                    AppendLog(L"[Password] Found configured value in user hive.");
                                     CloseHandle(hUserToken);
                                     return val;
                                 }
                             } else {
                                 if (hKey) RegCloseKey(hKey);
-                                AppendLog(L"[Password] md5 not present in user hive.");
+                                AppendLog(L"[Password] Value not present in user hive.");
                             }
                         } else {
                             AppendLog(L"[Password] RegOpenKeyExW failed for user hive. Error: " + std::to_wstring(res));
@@ -1195,11 +1195,11 @@ static std::wstring GetConfiguredMd5()
     }
 
     // fallback to HKEY_CURRENT_USER
-    AppendLog(L"[Password] Falling back to HKEY_CURRENT_USER check.");
+    AppendLog(L"[Password] Falling back to current user check.");
     HKEY hKey = NULL;
     LONG res = RegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\SeewoKiller\\pwd_config", 0, KEY_READ, &hKey);
     if (res != ERROR_SUCCESS) {
-        AppendLog(L"[Password] RegOpenKeyExW(HKEY_CURRENT_USER) failed. Error: " + std::to_wstring(res));
+        AppendLog(L"[Password] RegOpenKeyExW(current user hive) failed. Error: " + std::to_wstring(res));
         return L"";
     }
     DWORD type = 0;
@@ -1207,7 +1207,7 @@ static std::wstring GetConfiguredMd5()
     res = RegQueryValueExW(hKey, L"md5", NULL, &type, NULL, &cb);
     if (res != ERROR_SUCCESS || type != REG_SZ || cb == 0) {
         if (hKey) RegCloseKey(hKey);
-        AppendLog(L"[Password] md5 not present or invalid in HKEY_CURRENT_USER.");
+        AppendLog(L"[Password] Value not present or invalid in current user hive.");
         return L"";
     }
     std::vector<wchar_t> buf(cb / sizeof(wchar_t) + 1);
@@ -1215,7 +1215,7 @@ static std::wstring GetConfiguredMd5()
     RegCloseKey(hKey);
     if (res == ERROR_SUCCESS) {
         std::wstring val(buf.data());
-        AppendLog(L"[Password] Found md5 in HKEY_CURRENT_USER: " + val);
+        AppendLog(L"[Password] Found configured value in current user hive.");
         return val;
     }
     return L"";
@@ -1240,7 +1240,7 @@ bool SetConfiguredMd5(const std::wstring& md5)
                         std::wstring sid(sidStr);
                         LocalFree(sidStr);
                         std::wstring regPath = sid + L"\\SOFTWARE\\SeewoKiller\\pwd_config";
-                        AppendLog(L"[Password] Attempting to write to HKEY_USERS\\" + regPath);
+                        AppendLog(L"[Password] Attempting to write to user hive.");
                         HKEY hKey = NULL;
                         DWORD disp = 0;
                         LONG res = RegCreateKeyExW(HKEY_USERS, regPath.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, &disp);
@@ -1250,53 +1250,53 @@ bool SetConfiguredMd5(const std::wstring& md5)
                                 LONG del = RegDeleteValueW(hKey, L"md5");
                                 RegCloseKey(hKey);
                                 if (del == ERROR_SUCCESS || del == ERROR_FILE_NOT_FOUND) {
-                                    AppendLog(L"[Password] Deleted md5 value from HKEY_USERS (or it did not exist)." );
+                                    AppendLog(L"[Password] Deleted configured value from user hive (or it did not exist)." );
                                     CloseHandle(hUserToken);
                                     return true;
                                 } else {
-                                    AppendLog(L"[Password] RegDeleteValueW failed for HKEY_USERS. Error: " + std::to_wstring(del));
+                                    AppendLog(L"[Password] RegDeleteValueW failed for user hive. Error: " + std::to_wstring(del));
                                 }
                             } else {
                                 std::wstring md5w = md5;
                                 LONG r2 = RegSetValueExW(hKey, L"md5", 0, REG_SZ, (const BYTE*)md5w.c_str(), (DWORD)((md5w.size()+1)*sizeof(wchar_t)));
                                 RegCloseKey(hKey);
                                 if (r2 == ERROR_SUCCESS) {
-                                    AppendLog(L"[Password] Successfully wrote md5 to HKEY_USERS.");
+                                    AppendLog(L"[Password] Successfully wrote configured value to user hive.");
                                     CloseHandle(hUserToken);
                                     return true;
                                 } else {
-                                    AppendLog(L"[Password] RegSetValueExW failed for HKEY_USERS. Error: " + std::to_wstring(r2));
+                                    AppendLog(L"[Password] RegSetValueExW failed for user hive. Error: " + std::to_wstring(r2));
                                 }
                             }
                         } else {
-                            AppendLog(L"[Password] RegCreateKeyExW failed for HKEY_USERS. Error: " + std::to_wstring(res));
+                            AppendLog(L"[Password] RegCreateKeyExW failed for user hive. Error: " + std::to_wstring(res));
                         }
                     }
                 }
             }
             CloseHandle(hUserToken);
         } else {
-            AppendLog(L"[Password] WTSQueryUserToken failed while setting md5. Error: " + std::to_wstring(GetLastError()));
+            AppendLog(L"[Password] WTSQueryUserToken failed while setting configuration. Error: " + std::to_wstring(GetLastError()));
         }
     }
 
     // fallback to HKEY_CURRENT_USER
-    AppendLog(L"[Password] Falling back to write HKEY_CURRENT_USER.");
+    AppendLog(L"[Password] Falling back to write current user hive.");
     HKEY hKey = NULL;
     DWORD disp = 0;
     LONG res2 = RegCreateKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\SeewoKiller\\pwd_config", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, &disp);
     if (res2 != ERROR_SUCCESS) {
-        AppendLog(L"[Password] RegCreateKeyExW(HKEY_CURRENT_USER) failed. Error: " + std::to_wstring(res2));
+        AppendLog(L"[Password] RegCreateKeyExW(current user hive) failed. Error: " + std::to_wstring(res2));
         return false;
     }
     if (md5.empty()) {
         LONG del = RegDeleteValueW(hKey, L"md5");
         RegCloseKey(hKey);
         if (del == ERROR_SUCCESS || del == ERROR_FILE_NOT_FOUND) {
-            AppendLog(L"[Password] Deleted md5 value from HKEY_CURRENT_USER (or it did not exist)." );
+            AppendLog(L"[Password] Deleted configured value from current user hive (or it did not exist)." );
             return true;
         } else {
-            AppendLog(L"[Password] RegDeleteValueW failed for HKEY_CURRENT_USER. Error: " + std::to_wstring(del));
+            AppendLog(L"[Password] RegDeleteValueW failed for current user hive. Error: " + std::to_wstring(del));
             return false;
         }
     } else {
@@ -1304,10 +1304,10 @@ bool SetConfiguredMd5(const std::wstring& md5)
         LONG r3 = RegSetValueExW(hKey, L"md5", 0, REG_SZ, (const BYTE*)md5w.c_str(), (DWORD)((md5w.size()+1)*sizeof(wchar_t)));
         RegCloseKey(hKey);
         if (r3 == ERROR_SUCCESS) {
-            AppendLog(L"[Password] Successfully wrote md5 to HKEY_CURRENT_USER.");
+            AppendLog(L"[Password] Successfully wrote configured value to current user hive.");
             return true;
         } else {
-            AppendLog(L"[Password] RegSetValueExW failed for HKEY_CURRENT_USER. Error: " + std::to_wstring(r3));
+            AppendLog(L"[Password] RegSetValueExW failed for current user hive. Error: " + std::to_wstring(r3));
             return false;
         }
     }
@@ -1369,18 +1369,18 @@ LRESULT CALLBACK PasswordWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             std::string utf8 = Utf16ToUtf8(pwd);
             std::string md5 = Md5HexLower(utf8);
             std::wstring md5w(md5.begin(), md5.end());
-            AppendLog(L"[Password] Computed md5: " + md5w);
+            AppendLog(L"[Password] Computed password hash.");
 
             // 获取配置的 md5
             std::wstring cfg = GetConfiguredMd5();
             std::string cfg_n = Utf16ToUtf8(cfg);
-            AppendLog(L"[Password] Config md5 (raw): " + cfg);
+            AppendLog(L"[Password] Loaded configured hash.");
 
             bool ok = false;
             if (!cfg_n.empty()) {
                 ok = (md5 == cfg_n);
             } else {
-                AppendLog(L"[Password] No configured md5 to compare.");
+                AppendLog(L"[Password] No configured value to compare.");
             }
 
             if (ok) {
@@ -1496,7 +1496,7 @@ LRESULT CALLBACK ChangePwdWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             if (hEdit2) GetWindowTextW(hEdit2, p2, (int)_countof(p2));
             std::wstring ws1(p1), ws2(p2);
             if (ws1 == ws2) {
-                AppendLog(L"[ChangePwd] New passwords match. Persisting md5 to registry...");
+                AppendLog(L"[ChangePwd] New passwords match. Persisting configuration...");
                 bool wrote = false;
                 if (ws1.empty()) {
                     // empty means clear password
@@ -1510,13 +1510,13 @@ LRESULT CALLBACK ChangePwdWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     wrote = SetConfiguredMd5(md5w);
                 }
                 if (wrote) {
-                    AppendLog(L"[ChangePwd] md5 persisted successfully.");
+                    AppendLog(L"[ChangePwd] Configuration persisted successfully.");
                     MessageBoxW(hwnd, L"Password changed successfully", L"Change Password", MB_OK | MB_ICONINFORMATION);
                     ShowWindow(hwnd, SW_HIDE);
                     g_hChangePwdWnd = NULL;
                     DestroyWindow(hwnd);
                 } else {
-                    AppendLog(L"[ChangePwd] Failed to persist md5.");
+                    AppendLog(L"[ChangePwd] Failed to persist configuration.");
                     MessageBoxW(hwnd, L"Failed to persist new password", L"Change Password", MB_OK | MB_ICONERROR);
                 }
             } else {
@@ -1591,8 +1591,8 @@ void RemoveTrayIcon() {
 void ShowTrayMenu(HWND hwnd) {
     if (!g_hTrayMenu) {
         g_hTrayMenu = CreatePopupMenu();
-        AppendMenuW(g_hTrayMenu, MF_STRING, ID_TRAY_PASSWORD, L"Password");
         AppendMenuW(g_hTrayMenu, MF_STRING, ID_TRAY_SHOWLOG, L"ShowLog");
+        AppendMenuW(g_hTrayMenu, MF_STRING, ID_TRAY_PASSWORD, L"Password");
         AppendMenuW(g_hTrayMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
     }
     POINT pt;
@@ -1719,4 +1719,3 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     }
     return 0;
 }
-
